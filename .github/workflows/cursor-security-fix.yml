@@ -36,7 +36,7 @@ jobs:
           git reset --hard "${{ github.event.pull_request.base.sha }}"
           echo "reset_to_base=true" >> "$GITHUB_OUTPUT"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
 
