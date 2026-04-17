@@ -46,6 +46,9 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: javascript/pnpm-lock.yaml
 
+      - name: 'Install dependencies'
+        run: pnpm install --frozen-lockfile
+
       - name: 'Step 1: Pre-flight Audit (Quota Saver)'
         id: audit
         run: |
@@ -77,7 +80,16 @@ jobs:
       - name: 'Step 2: Ghost Check'
         if: steps.audit.outputs.should_run == 'true'
         run: |
-          TARGET_PKG=$(jq -r '(.vulnerabilities | keys)[0]' audit-report.json)
+          TARGET_PKG=$(jq -r '
+            ((.vulnerabilities // {}) | keys | .[0]) //
+            ((.actions // []) | map(select(.module != null) | .module) | .[0]) //
+            empty
+          ' audit-report.json)
+          if [[ -z "$TARGET_PKG" ]]; then
+            echo "::error::audit-report.json sem pacote alvo (vulnerabilities vazio e actions sem module)"
+            jq '.' audit-report.json 2>/dev/null | head -c 6000 || cat audit-report.json
+            exit 1
+          fi
           echo "PKG=$TARGET_PKG" >> $GITHUB_ENV
           pnpm why "$TARGET_PKG" > why-context.txt 2>&1
 
