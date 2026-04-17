@@ -28,7 +28,7 @@
     "@types/node": "22.14.1",
     "@typescript-eslint/eslint-plugin": "8.32.1",
     "@typescript-eslint/parser": "8.32.1",
-    "@vitest/eslint-plugin": "1.2.0",
+    "@vitest/eslint-plugin": "1.6.16",
     "concurrently": "8.2.2",
     "eslint": "9.27.0",
     "eslint-config-prettier": "8.10.0",
