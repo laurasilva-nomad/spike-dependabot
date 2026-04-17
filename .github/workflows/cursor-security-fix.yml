@@ -42,9 +42,9 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: javascript/pnpm-lock.yaml
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v4
         with:
-          package_json_file: javascript/package.json
+          version: 10.23.0
 
       - name: 'Install dependencies'
         run: pnpm install --frozen-lockfile
