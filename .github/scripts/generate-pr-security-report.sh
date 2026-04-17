@@ -10,6 +10,7 @@ cd "$JS"
 
 write_clean_report() {
   local base_sha="$1"
+  local diff_tip="${PR_HEAD_SHA:-HEAD}"
   pnpm audit --json > audit-full.json 2>/dev/null || true
 
   local high_crit
@@ -25,7 +26,7 @@ write_clean_report() {
     echo "| Métrica | Valor |"
     echo "|---------|-------|"
     echo "| High/Critical no \`pnpm audit\` (local) | ${high_crit} |"
-    echo "| Diff analisado | \`${base_sha:0:7}...\` → \`HEAD\` |"
+    echo "| Diff analisado | \`${base_sha:0:7}...\` → \`${diff_tip:0:7}...\` (tip do PR) |"
     echo
     echo "Escopo de correção automática no job: **High** e **Critical**; com 0 pendentes, não há passos de fix."
     echo
@@ -37,11 +38,11 @@ write_clean_report() {
 
     echo "### 3. Grafo / bump"
     echo
-    DIFF_PKG=$(git -C "$ROOT" diff --no-color "${base_sha}"...HEAD -- "javascript/package.json" 2>/dev/null || true)
-    DIFF_LOCK=$(git -C "$ROOT" diff --no-color "${base_sha}"...HEAD -- "javascript/pnpm-lock.yaml" 2>/dev/null || true)
+    DIFF_PKG=$(git -C "$ROOT" diff --no-color "${base_sha}"..."${diff_tip}" -- "javascript/package.json" 2>/dev/null || true)
+    DIFF_LOCK=$(git -C "$ROOT" diff --no-color "${base_sha}"..."${diff_tip}" -- "javascript/pnpm-lock.yaml" 2>/dev/null || true)
     DIFF_YARN=
     if [[ -f "${ROOT}/javascript/yarn.lock" ]]; then
-      DIFF_YARN=$(git -C "$ROOT" diff --no-color "${base_sha}"...HEAD -- "javascript/yarn.lock" 2>/dev/null || true)
+      DIFF_YARN=$(git -C "$ROOT" diff --no-color "${base_sha}"..."${diff_tip}" -- "javascript/yarn.lock" 2>/dev/null || true)
     fi
 
     if [[ -z "$DIFF_PKG" && -z "$DIFF_LOCK" && -z "$DIFF_YARN" ]]; then
@@ -81,7 +82,7 @@ $(echo "$DIFF_PKG" | head -n 120)
       echo "**Lockfile pnpm (stat vs base):**"
       echo
       echo "\`\`\`"
-      git -C "$ROOT" diff --stat "${base_sha}"...HEAD -- "javascript/pnpm-lock.yaml" 2>/dev/null || true
+      git -C "$ROOT" diff --stat "${base_sha}"..."${diff_tip}" -- "javascript/pnpm-lock.yaml" 2>/dev/null || true
       echo "\`\`\`"
     fi
     if [[ -n "${DIFF_YARN:-}" ]]; then
@@ -89,7 +90,7 @@ $(echo "$DIFF_PKG" | head -n 120)
       echo "**yarn.lock (stat vs base):**"
       echo
       echo "\`\`\`"
-      git -C "$ROOT" diff --stat "${base_sha}"...HEAD -- "javascript/yarn.lock" 2>/dev/null || true
+      git -C "$ROOT" diff --stat "${base_sha}"..."${diff_tip}" -- "javascript/yarn.lock" 2>/dev/null || true
       echo "\`\`\`"
     fi
   } > "$OUT"

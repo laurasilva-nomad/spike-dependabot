@@ -68,6 +68,7 @@ jobs:
         env:
           SECURITY_REPORT_AUDIT_CLEAN: 'true'
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           REPORT_FILE=$(bash "$GITHUB_WORKSPACE/.github/scripts/generate-pr-security-report.sh")
@@ -106,7 +107,7 @@ jobs:
           echo "report_path=$REPORT_FILE" >> "$GITHUB_OUTPUT"
 
       - name: 'Step 6: Push Fixes'
-        if: steps.audit.outputs.should_run == 'true'
+        if: steps.audit.outputs.should_run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         working-directory: ${{ github.workspace }}
         run: |
           git config user.name "Cursor AI Bot"
