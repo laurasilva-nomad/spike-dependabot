@@ -36,15 +36,15 @@ jobs:
           git reset --hard "${{ github.event.pull_request.base.sha }}"
           echo "reset_to_base=true" >> "$GITHUB_OUTPUT"
 
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'pnpm'
           cache-dependency-path: javascript/pnpm-lock.yaml
+
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: javascript/package.json
 
       - name: 'Install dependencies'
         run: pnpm install --frozen-lockfile
