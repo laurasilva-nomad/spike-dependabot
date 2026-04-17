@@ -60,7 +60,7 @@ jobs:
           else
             echo "should_run=true" >> $GITHUB_OUTPUT
             echo "post_clean_overview=false" >> $GITHUB_OUTPUT
-            pnpm audit --json > audit-report.json
+            pnpm audit --json > audit-report.json || true
           fi
 
       - name: 'PR overview (audit já limpo neste branch)'
