@@ -1,0 +1,131 @@
+name: 🛡️ Cursor Auto-Fix (Critical/High)
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - 'javascript/**'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+defaults:
+  run:
+    working-directory: javascript
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  remediate:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'dependabot/'))
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: 'Restaurar ao base do PR (fluxo verify: estado pré-bump no clone)'
+        id: restore_base
+        if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'dependabot/') && github.event.pull_request.head.repo.full_name == github.repository
+        working-directory: ${{ github.workspace }}
+        run: |
+          git reset --hard "${{ github.event.pull_request.base.sha }}"
+          echo "reset_to_base=true" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: javascript/pnpm-lock.yaml
+
+      - name: 'Step 1: Pre-flight Audit (Quota Saver)'
+        id: audit
+        run: |
+          if pnpm audit --audit-level=high; then
+            echo "✅ pnpm audit: 0 High/Critical no lockfile — não há remediação automática a aplicar."
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              echo "post_clean_overview=true" >> $GITHUB_OUTPUT
+            else
+              echo "post_clean_overview=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "post_clean_overview=false" >> $GITHUB_OUTPUT
+            pnpm audit --json > audit-report.json
+          fi
+
+      - name: 'PR overview (audit já limpo neste branch)'
+        if: steps.audit.outputs.post_clean_overview == 'true'
+        env:
+          SECURITY_REPORT_AUDIT_CLEAN: 'true'
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPORT_FILE=$(bash "$GITHUB_WORKSPACE/.github/scripts/generate-pr-security-report.sh")
+          gh pr edit ${{ github.event.pull_request.number }} --body-file "$REPORT_FILE"
+
+      - name: 'Step 2: Ghost Check'
+        if: steps.audit.outputs.should_run == 'true'
+        run: |
+          TARGET_PKG=$(jq -r '(.vulnerabilities | keys)[0]' audit-report.json)
+          echo "PKG=$TARGET_PKG" >> $GITHUB_ENV
+          pnpm why "$TARGET_PKG" > why-context.txt 2>&1
+
+      - name: 'Step 3: Cursor AI Remediation'
+        if: steps.audit.outputs.should_run == 'true'
+        env:
+          CURSOR_TOKEN: ${{ secrets.CURSOR_TOKEN }}
+        run: |
+          cursor chat \
+            --file ${{ github.workspace }}/rules/verify-issues-dependabot.md \
+            --file why-context.txt \
+            --file audit-report.json \
+            --instruction "Analista de segurança: aplique só correções High/Critical conforme verify-issues-dependabot.md (pnpm, pnpm.overrides em package.json quando necessário, versões exatas). Não gere relatório em texto; altere apenas arquivos do projeto."
+
+      - name: 'Step 4: Final Validation'
+        if: steps.audit.outputs.should_run == 'true'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm audit --json > audit-after.json || true
+          pnpm audit --audit-level=high
+
+      - name: 'Step 5: Overview do PR (correção aplicada)'
+        if: steps.audit.outputs.should_run == 'true'
+        id: pr_overview
+        run: |
+          REPORT_FILE=$(bash "$GITHUB_WORKSPACE/.github/scripts/generate-pr-security-report.sh")
+          echo "report_path=$REPORT_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: 'Step 6: Push Fixes'
+        if: steps.audit.outputs.should_run == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          git config user.name "Cursor AI Bot"
+          git config user.email "bot@cursor.com"
+          git add javascript
+          git commit -m "security: auto-fix $PKG (High/Critical) via Cursor"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            if [[ "${{ steps.restore_base.outputs.reset_to_base }}" == "true" ]]; then
+              git push --force-with-lease origin "HEAD:${{ github.event.pull_request.head.ref }}"
+            else
+              git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+            fi
+          else
+            git push
+          fi
+
+      - name: 'Step 7: Update PR description'
+        if: steps.audit.outputs.should_run == 'true' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --body-file "${{ steps.pr_overview.outputs.report_path }}"

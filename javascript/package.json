@@ -1,0 +1,58 @@
+{
+  "name": "landing_pages",
+  "version": "3.71.0",
+  "description": "",
+  "private": true,
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "setup": "lerna run setup",
+    "build:dev": "lerna run build:dev",
+    "build:prod": "lerna run build:prod",
+    "build:development": "lerna run build:dev && pnpm run artifact",
+    "build:production": "lerna run build:prod && pnpm run artifact",
+    "build": "lerna run build",
+    "start": "lerna run start",
+    "site:start": "lerna run start --scope site",
+    "review": "lerna run lint:check,format:check,typecheck",
+    "test": "lerna run test",
+    "test:coverage": "lerna run test:coverage",
+    "artifact": "rm -rf build && mkdir -p build && lerna run artifact && zip -q -r build.zip build",
+    "build:serve": "pnpm build && pnpm artifact && pnpm serve",
+    "serve": "concurrently \"pnpm:serve:*\"",
+    "serve:build": "serve -p 5501 -s -C build",
+    "serve:emulator": "serve -p 5500 testing/emulator"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.27.0",
+    "@types/js-yaml": "4.0.9",
+    "@types/node": "22.14.1",
+    "@typescript-eslint/eslint-plugin": "8.32.1",
+    "@typescript-eslint/parser": "8.32.1",
+    "@vitest/eslint-plugin": "1.2.0",
+    "concurrently": "8.2.2",
+    "eslint": "9.27.0",
+    "eslint-config-prettier": "8.10.0",
+    "eslint-plugin-import": "2.31.0",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-no-unsanitized": "4.1.2",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "eslint-plugin-react-refresh": "0.4.20",
+    "eslint-plugin-testing-library": "7.2.1",
+    "globals": "15.15.0",
+    "js-yaml": "4.1.1",
+    "lerna": "9.0.4",
+    "prettier": "3.5.3",
+    "release-it": "19.0.6",
+    "release-it-pnpm": "4.6.6",
+    "serve": "14.2.5",
+    "typescript": "5.5.4",
+    "typescript-eslint": "8.32.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "tar": "7.5.11"
+    }
+  },
+  "packageManager": "pnpm@10.23.0+sha512.21c4e5698002ade97e4efe8b8b4a89a8de3c85a37919f957e7a0f30f38fbc5bbdd05980ffe29179b2fb6e6e691242e098d945d1601772cad0fef5fb6411e2a4b"
+}
