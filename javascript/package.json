@@ -41,7 +41,7 @@
     "eslint-plugin-testing-library": "7.2.1",
     "globals": "15.15.0",
     "js-yaml": "4.1.1",
-    "lerna": "9.0.4",
+    "lerna": "9.0.7",
     "prettier": "3.5.3",
     "release-it": "19.0.6",
     "release-it-pnpm": "4.6.6",
