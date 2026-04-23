@@ -11,6 +11,9 @@ importers:
       axios:
         specifier: 0.21.1
         version: 0.21.1
+      growl:
+        specifier: 1.10.0
+        version: 1.10.0
       hot-formula-parser:
         specifier: 3.0.2
         version: 3.0.2
@@ -63,6 +66,9 @@ packages:
     peerDependenciesMeta:
       debug:
         optional: true
+
+  growl@1.10.0:
+    resolution: {integrity: sha512-ElsQbgadAZdhC8L+hx4RJu6fDe5uPCaRjdw8CvD39VYemGQT9CSiLdRAEYFWVIlCbPNlw+G4AbqBhQJF2qyHdg==}
 
   hot-formula-parser@3.0.2:
     resolution: {integrity: sha512-W/Dj/UbIyuViMIQOQD6tUEVySl7jd6ei+gfWslTiRqa4yRhkyHnIz8N4oLnqgDRhhVAQIcFF5NfNz49k4X8IxQ==}
@@ -167,6 +173,8 @@ snapshots:
       safe-buffer: 5.2.1
 
   follow-redirects@1.16.0: {}
+
+  growl@1.10.0: {}
 
   hot-formula-parser@3.0.2:
     dependencies:
