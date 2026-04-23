@@ -41,7 +41,18 @@ jobs:
 
       - name: Install JS dependencies
         working-directory: javascript
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Dependabot API (diagnóstico)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          gh auth status
+          echo "Total alertas abertos (todas severidades/ecossistemas):"
+          gh api repos/:owner/:repo/dependabot/alerts -f state=open --jq 'length'
+          echo "Primeiros alertas (number, severity, ecosystem, manifest_path):"
+          gh api repos/:owner/:repo/dependabot/alerts -f state=open --jq '.[:15] | map({n:.number,sev:.security_advisory.severity,eco:.dependency.package.ecosystem,pkg:.dependency.package.name,pth:.dependency.manifest_path})'
 
       - name: 🤖 Execute Cursor Fix Logic
         working-directory: javascript

@@ -59,12 +59,18 @@ function severityRank(sev) {
 }
 
 function patchedVersionFromAlert(alert) {
+  const top = alert.security_vulnerability?.first_patched_version?.identifier;
+  if (top) return String(top).trim();
+
   const pkg = alert.dependency?.package?.name;
   const vulns = alert.security_advisory?.vulnerabilities;
   if (Array.isArray(vulns) && pkg) {
     const v = vulns.find((x) => x?.package?.name === pkg);
     const id = v?.first_patched_version?.identifier;
-    if (id) return id.trim();
+    if (id) return String(id).trim();
+    const anyId = vulns.find((x) => x?.first_patched_version?.identifier)?.first_patched_version
+      ?.identifier;
+    if (anyId) return String(anyId).trim();
   }
   const patched = alert.security_advisory?.patched_versions;
   if (typeof patched === 'string' && patched.trim()) {
@@ -175,6 +181,8 @@ function run() {
     return;
   }
 
+  console.log(`Alertas Dependabot retornados pela API: ${alerts.length}`);
+
   const filtered = alerts.filter((a) => {
     const sev = a.security_advisory?.severity;
     const eco = a.dependency?.package?.ecosystem;
@@ -189,18 +197,35 @@ function run() {
   });
 
   if (filtered.length === 0) {
-    console.log('Nenhum alerta critical/high (npm) aberto.');
+    const bySev = {};
+    const byEco = {};
+    for (const a of alerts) {
+      const s = a.security_advisory?.severity ?? 'unknown';
+      bySev[s] = (bySev[s] ?? 0) + 1;
+      const e = a.dependency?.package?.ecosystem ?? 'unknown';
+      byEco[e] = (byEco[e] ?? 0) + 1;
+    }
+    console.log(
+      'Nenhum alerta critical/high (npm) na fila. Distribuição severity (todos):',
+      JSON.stringify(bySev)
+    );
+    console.log('Distribuição ecosystem (todos):', JSON.stringify(byEco));
+    console.log(
+      'Se existir alerta moderate/low ou outro ecosystem, não gera PR (filtro atual).'
+    );
     return;
   }
 
-  console.log(`Total de alertas na fila: ${filtered.length}`);
+  console.log(`Alertas critical/high npm na fila: ${filtered.length}`);
 
+  let skippedNoPatch = 0;
   for (const alert of filtered) {
     const pkgName = alert.dependency.package.name;
     const alertId = alert.number;
     const safeVersion = patchedVersionFromAlert(alert);
 
     if (!safeVersion) {
+      skippedNoPatch += 1;
       console.warn(`Sem versão patchada explícita para ${pkgName} (#${alertId}), pulando.`);
       continue;
     }
@@ -256,6 +281,9 @@ function run() {
         void 0;
       }
     }
+  }
+  if (skippedNoPatch > 0) {
+    console.log(`Alertas ignorados sem versão patch na API: ${skippedNoPatch}`);
   }
 }
 
