@@ -21,8 +21,8 @@ importers:
         specifier: 8.5.1
         version: 8.5.1
       lodash:
-        specifier: 4.17.15
-        version: 4.17.15
+        specifier: 4.18.0
+        version: 4.18.0
       minimist:
         specifier: 1.2.5
         version: 1.2.5
@@ -104,8 +104,9 @@ packages:
   lodash.once@4.1.1:
     resolution: {integrity: sha512-Sb487aTOCr9drQVL8pIxOzVhafOjZN9UU54hiN8PU3uAiSV7lx1yYNpbNmex2PK6dSJoNTSJUUswT651yww3Mg==}
 
-  lodash@4.17.15:
-    resolution: {integrity: sha512-8xOcRHvCjnocdS5cpwXQXVzmmh5e5+saE2QGoeQmbKmRS6J3VQppPOIt0MnmE+4xlZoumy0GPG0D0MVIQbNA1A==}
+  lodash@4.18.0:
+    resolution: {integrity: sha512-l1mfj2atMqndAHI3ls7XqPxEjV2J9ZkcNyHpoZA3r2T1LLwDB69jgkMWh71YKwhBbK0G2f4WSn05ahmQXVxupA==}
+    deprecated: Bad release. Please use lodash@4.17.21 instead.
 
   lru-cache@6.0.0:
     resolution: {integrity: sha512-Jo6dJ04CmSjuznwJSS3pUeWmd/H0ffTlkXXgwZi+eq1UCmqQwCh+eLsYOYCwY991i2Fah4h1BEMCx4qThGbsiA==}
@@ -215,7 +216,7 @@ snapshots:
 
   lodash.once@4.1.1: {}
 
-  lodash@4.17.15: {}
+  lodash@4.18.0: {}
 
   lru-cache@6.0.0:
     dependencies:
