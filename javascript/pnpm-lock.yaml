@@ -15,8 +15,8 @@ importers:
         specifier: 3.0.2
         version: 3.0.2
       json-schema:
-        specifier: 0.2.3
-        version: 0.2.3
+        specifier: 0.4.0
+        version: 0.4.0
       jsonwebtoken:
         specifier: 8.5.1
         version: 8.5.1
@@ -67,8 +67,8 @@ packages:
   hot-formula-parser@3.0.2:
     resolution: {integrity: sha512-W/Dj/UbIyuViMIQOQD6tUEVySl7jd6ei+gfWslTiRqa4yRhkyHnIz8N4oLnqgDRhhVAQIcFF5NfNz49k4X8IxQ==}
 
-  json-schema@0.2.3:
-    resolution: {integrity: sha512-a3xHnILGMtk+hDOqNwHzF6e2fNbiMrXZvxKQiEv2MlgQP+pjIOzqAmKYD2mDpXYE/44M7g+n9p2bKkYWDUcXCQ==}
+  json-schema@0.4.0:
+    resolution: {integrity: sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA==}
 
   jsonwebtoken@8.5.1:
     resolution: {integrity: sha512-XjwVfRS6jTMsqYs0EsuJ4LGxXV14zQybNd4L2r0UvbVnSF9Af8x7p5MzbJ90Ioz/9TI41/hTCvznF/loiSzn8w==}
@@ -173,7 +173,7 @@ snapshots:
       '@handsontable/formulajs': 2.0.2
       tiny-emitter: 2.1.0
 
-  json-schema@0.2.3: {}
+  json-schema@0.4.0: {}
 
   jsonwebtoken@8.5.1:
     dependencies:

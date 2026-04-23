@@ -6,7 +6,7 @@
   "dependencies": {
     "axios": "0.21.1",
     "hot-formula-parser": "3.0.2",
-    "json-schema": "0.2.3",
+    "json-schema": "0.4.0",
     "jsonwebtoken": "8.5.1",
     "lodash": "4.17.15",
     "minimist": "1.2.5",
