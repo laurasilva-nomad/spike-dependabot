@@ -46,20 +46,47 @@ jobs:
       - name: Dependabot API (diagnóstico)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
         run: |
-          set -x
+          set -euo pipefail
+          if [ -n "${GH_DEPENDABOT_ALERTS_TOKEN:-}" ]; then
+            export GH_TOKEN="${GH_DEPENDABOT_ALERTS_TOKEN}"
+            echo "Usando secret GH_DEPENDABOT_ALERTS_TOKEN para a API de alertas."
+          fi
           gh auth status
-          echo "Repositório: ${{ github.repository }}"
-          echo "Total alertas abertos (todas severidades/ecossistemas):"
-          gh api "repos/${{ github.repository }}/dependabot/alerts" -f state=open --jq 'length'
-          echo "Primeiros alertas (number, severity, ecosystem, manifest_path):"
-          gh api "repos/${{ github.repository }}/dependabot/alerts" -f state=open --jq '.[:15] | map({n:.number,sev:.security_advisory.severity,eco:.dependency.package.ecosystem,pkg:.dependency.package.name,pth:.dependency.manifest_path})'
+          REPO="${{ github.repository }}"
+          echo "Repositório: ${REPO}"
+          echo "GET /repos/${REPO}/dependabot/alerts (headers Accept + X-GitHub-Api-Version) ..."
+          if ! gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPO}/dependabot/alerts" \
+            -f state=open \
+            --jq 'length'; then
+            echo "::error::Dependabot Alerts API falhou (404 costuma sumir com headers corretos; 403 = permissão no token ou política da org)."
+            echo "Opcional: crie um PAT classic com scope security_events e salve como secret GH_DEPENDABOT_ALERTS_TOKEN."
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/${REPO}/dependabot/alerts" \
+              -f state=open 2>&1 || true
+            exit 1
+          fi
+          echo "Primeiros alertas:"
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPO}/dependabot/alerts" \
+            -f state=open \
+            --jq '.[:15] | map({n:.number,sev:.security_advisory.severity,eco:.dependency.package.ecosystem,pkg:.dependency.package.name,pth:.dependency.manifest_path})'
 
       - name: 🤖 Execute Cursor Fix Logic
         working-directory: javascript
         env:
           CURSOR_TOKEN: ${{ secrets.CURSOR_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_VERSION: ${{ vars.GITHUB_API_VERSION }}
         run: node scripts/cursor-fixer.js
