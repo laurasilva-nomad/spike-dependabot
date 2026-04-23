@@ -45,7 +45,7 @@ jobs:
 
       - name: Dependabot API (diagnóstico)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
           GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
         run: |
           set -euo pipefail
@@ -84,7 +84,7 @@ jobs:
         working-directory: javascript
         env:
           CURSOR_TOKEN: ${{ secrets.CURSOR_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
           GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GITHUB_REPOSITORY: ${{ github.repository }}
