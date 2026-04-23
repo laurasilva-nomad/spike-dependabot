@@ -49,10 +49,11 @@ jobs:
         run: |
           set -x
           gh auth status
+          echo "Repositório: ${{ github.repository }}"
           echo "Total alertas abertos (todas severidades/ecossistemas):"
-          gh api repos/:owner/:repo/dependabot/alerts -f state=open --jq 'length'
+          gh api "repos/${{ github.repository }}/dependabot/alerts" -f state=open --jq 'length'
           echo "Primeiros alertas (number, severity, ecosystem, manifest_path):"
-          gh api repos/:owner/:repo/dependabot/alerts -f state=open --jq '.[:15] | map({n:.number,sev:.security_advisory.severity,eco:.dependency.package.ecosystem,pkg:.dependency.package.name,pth:.dependency.manifest_path})'
+          gh api "repos/${{ github.repository }}/dependabot/alerts" -f state=open --jq '.[:15] | map({n:.number,sev:.security_advisory.severity,eco:.dependency.package.ecosystem,pkg:.dependency.package.name,pth:.dependency.manifest_path})'
 
       - name: 🤖 Execute Cursor Fix Logic
         working-directory: javascript
@@ -60,4 +61,5 @@ jobs:
           CURSOR_TOKEN: ${{ secrets.CURSOR_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/cursor-fixer.js

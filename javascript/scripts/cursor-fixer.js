@@ -33,11 +33,27 @@ function rulesContent() {
   return readTextIfExists(RULES_MD);
 }
 
+function ghRepoSlug() {
+  const envRepo = process.env.GITHUB_REPOSITORY;
+  if (envRepo && envRepo.includes('/')) return envRepo.trim();
+  try {
+    return exec('gh repo view --json nameWithOwner -q .nameWithOwner', {
+      cwd: REPO_ROOT,
+    }).trim();
+  } catch {
+    throw new Error(
+      'Defina GITHUB_REPOSITORY (ex.: org/repo) ou use gh em um clone com remote origin.'
+    );
+  }
+}
+
 function fetchDependabotAlerts() {
+  const slug = ghRepoSlug();
   const all = [];
   let page = 1;
   for (;;) {
-    const cmd = `gh api "repos/:owner/:repo/dependabot/alerts?state=open&per_page=100&page=${page}"`;
+    const pathAndQuery = `repos/${slug}/dependabot/alerts?state=open&per_page=100&page=${page}`;
+    const cmd = `gh api ${JSON.stringify(pathAndQuery)}`;
     let chunk;
     try {
       chunk = exec(cmd);
