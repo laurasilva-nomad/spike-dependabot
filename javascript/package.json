@@ -5,6 +5,7 @@
   "license": "MIT",
   "dependencies": {
     "axios": "0.21.1",
+    "ecstatic": "2.2.2",
     "hot-formula-parser": "3.0.2",
     "json-schema": "0.2.3",
     "jsonwebtoken": "8.5.1",
