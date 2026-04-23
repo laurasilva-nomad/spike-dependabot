@@ -47,20 +47,32 @@ function ghRepoSlug() {
   }
 }
 
-function fetchDependabotAlerts() {
-  const slug = ghRepoSlug();
+function ghApiVersion() {
+  return process.env.GITHUB_API_VERSION || '2022-11-28';
+}
+
+function tokenOptsForAlerts() {
+  const alertsToken = process.env.GH_DEPENDABOT_ALERTS_TOKEN;
+  return alertsToken ? { env: { ...process.env, GH_TOKEN: alertsToken } } : {};
+}
+
+function ghRestHeadersCmdPrefix() {
+  return [
+    'gh api',
+    '-H',
+    JSON.stringify('Accept: application/vnd.github+json'),
+    '-H',
+    JSON.stringify(`X-GitHub-Api-Version: ${ghApiVersion()}`),
+  ].join(' ');
+}
+
+function fetchDependabotAlertsRest(slug, tokenOpts) {
   const all = [];
   let page = 1;
   for (;;) {
-    const pathAndQuery = `repos/${slug}/dependabot/alerts?state=open&per_page=100&page=${page}`;
-    const cmd = `gh api ${JSON.stringify(pathAndQuery)}`;
-    let chunk;
-    try {
-      chunk = exec(cmd);
-    } catch (e) {
-      console.error(e.stderr || e.message);
-      throw e;
-    }
+    const pathAndQuery = `/repos/${slug}/dependabot/alerts?state=open&per_page=100&page=${page}`;
+    const cmd = [ghRestHeadersCmdPrefix(), JSON.stringify(pathAndQuery)].join(' ');
+    const chunk = exec(cmd, tokenOpts);
     const arr = JSON.parse(chunk);
     if (!Array.isArray(arr) || arr.length === 0) break;
     all.push(...arr);
@@ -68,6 +80,147 @@ function fetchDependabotAlerts() {
     page += 1;
   }
   return all;
+}
+
+function graphqlSeverityToRest(sev) {
+  if (!sev) return 'unknown';
+  const u = String(sev).toUpperCase();
+  const map = {
+    CRITICAL: 'critical',
+    HIGH: 'high',
+    MEDIUM: 'medium',
+    MODERATE: 'medium',
+    LOW: 'low',
+    INFORMATIONAL: 'low',
+  };
+  return map[u] || String(sev).toLowerCase();
+}
+
+function graphqlEcosystemToRest(eco) {
+  if (!eco) return 'npm';
+  return String(eco).toLowerCase();
+}
+
+function mapGraphqlNodeToRestAlert(node) {
+  const pkg = node.securityVulnerability?.package;
+  const ident = node.securityVulnerability?.firstPatchedVersion?.identifier;
+  const name = pkg?.name || '';
+  const eco = graphqlEcosystemToRest(pkg?.ecosystem);
+  const sev = graphqlSeverityToRest(node.securityAdvisory?.severity);
+  return {
+    number: node.number,
+    dependency: {
+      package: {
+        ecosystem: eco,
+        name,
+      },
+    },
+    security_advisory: {
+      severity: sev,
+      vulnerabilities:
+        name.length > 0
+          ? [
+              {
+                package: { name },
+                first_patched_version: ident ? { identifier: ident } : undefined,
+              },
+            ]
+          : [],
+    },
+    security_vulnerability: ident
+      ? {
+          first_patched_version: { identifier: ident },
+        }
+      : undefined,
+  };
+}
+
+function graphqlRequest(bodyObj, tokenOpts) {
+  const f = path.join(os.tmpdir(), `ghgql-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(f, JSON.stringify(bodyObj));
+  try {
+    return exec(`gh api graphql --input ${JSON.stringify(f)}`, tokenOpts);
+  } finally {
+    fs.unlinkSync(f);
+  }
+}
+
+function fetchDependabotAlertsGraphql(slug, tokenOpts) {
+  const slash = slug.indexOf('/');
+  const owner = slash === -1 ? '' : slug.slice(0, slash);
+  const name = slash === -1 ? '' : slug.slice(slash + 1);
+  if (!owner || !name) throw new Error('GITHUB_REPOSITORY inválido (esperado owner/nome).');
+  const query = `
+query($owner:String!,$name:String!,$after:String){
+  repository(owner:$owner,name:$name){
+    vulnerabilityAlerts(first:100,states:[OPEN],after:$after){
+      pageInfo{hasNextPage endCursor}
+      nodes{
+        number
+        securityAdvisory{severity}
+        securityVulnerability{
+          package{name ecosystem}
+          firstPatchedVersion{identifier}
+        }
+      }
+    }
+  }
+}`.replace(/\s+/g, ' ');
+  let after = null;
+  const mapped = [];
+  for (;;) {
+    const raw = graphqlRequest(
+      {
+        query,
+        variables: { owner, name, after },
+      },
+      tokenOpts
+    );
+    const parsed = JSON.parse(raw);
+    if (parsed.errors?.length) {
+      throw new Error(parsed.errors.map((e) => e.message).join('; '));
+    }
+    const repo = parsed.data?.repository;
+    if (!repo?.vulnerabilityAlerts) break;
+    const conn = repo.vulnerabilityAlerts;
+    const nodes = conn.nodes || [];
+    for (const n of nodes) {
+      mapped.push(mapGraphqlNodeToRestAlert(n));
+    }
+    if (!conn.pageInfo?.hasNextPage || !conn.pageInfo?.endCursor) break;
+    after = conn.pageInfo.endCursor;
+  }
+  return mapped;
+}
+
+function fetchDependabotAlerts() {
+  const slug = ghRepoSlug();
+  const tokenOpts = tokenOptsForAlerts();
+  try {
+    const rest = fetchDependabotAlertsRest(slug, tokenOpts);
+    console.log(`REST: ${rest.length} alerta(s) aberto(s).`);
+    return rest;
+  } catch (e) {
+    const msg = String(e.stderr || e.message || e);
+    console.warn('REST Dependabot alerts falhou:', msg.trim());
+    console.warn('Tentando GraphQL (repository.vulnerabilityAlerts)…');
+    try {
+      const gql = fetchDependabotAlertsGraphql(slug, tokenOpts);
+      console.log(`GraphQL: ${gql.length} alerta(s) aberto(s).`);
+      return gql;
+    } catch (e2) {
+      console.error('GraphQL falhou:', String(e2.stderr || e2.message || e2).trim());
+      throw new Error(
+        [
+          'Não foi possível listar alertas via REST nem GraphQL.',
+          'Confira: job.permissions.security-events: read;',
+          'na org: Actions → General → Workflow permissions não pode remover security-events do GITHUB_TOKEN;',
+          'ou secret GH_DEPENDABOT_ALERTS_TOKEN (PAT classic, scope security_events).',
+          'Doc: https://docs.github.com/en/rest/dependabot/alerts',
+        ].join(' ')
+      );
+    }
+  }
 }
 
 function severityRank(sev) {
