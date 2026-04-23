@@ -14,13 +14,13 @@ function findRepoRootFrom(startDir) {
   throw new Error('Raiz git não encontrada (subindo a partir do script).');
 }
 
-const SEVERITY_ORDER = { critical: 0, high: 1 };
+const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+const UNIFIED_BRANCH = 'security/dependabot-remediation';
 const REPO_ROOT =
   process.env.GITHUB_WORKSPACE != null && String(process.env.GITHUB_WORKSPACE).length > 0
     ? path.resolve(process.env.GITHUB_WORKSPACE)
     : findRepoRootFrom(__dirname);
 const GIT_CWD = REPO_ROOT;
-const UNIFIED_BRANCH = 'security/dependabot-critical-high';
 
 let PKG_ROOT = null;
 let PACKAGE_MANAGER = null;
@@ -230,17 +230,17 @@ function multiConsumerHeuristic(whyText) {
   return { likelyMulti, summary: likelyMulti ? 'provável (várias linhas no grafo)' : 'único ou poucos caminhos (heurística)' };
 }
 
-function pmAuditFailsHigh(cwd) {
+function pmAuditFailsAny(cwd) {
   try {
     if (PACKAGE_MANAGER === 'pnpm') {
-      execFileSync('pnpm', ['audit', '--audit-level', 'high'], {
+      execFileSync('pnpm', ['audit', '--audit-level', 'low'], {
         cwd,
         encoding: 'utf8',
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } else {
-      execFileSync('npm', ['audit', '--audit-level', 'high'], {
+      execFileSync('npm', ['audit', '--audit-level', 'low'], {
         cwd,
         encoding: 'utf8',
         env: process.env,
@@ -345,6 +345,12 @@ function overridesSnippet() {
         return ['', 'Trecho `pnpm.overrides` atual:', '', '```json', JSON.stringify({ pnpm: { overrides: o } }, null, 2), '```', ''].join('\n');
       }
     }
+    if (PACKAGE_MANAGER === 'yarn') {
+      const r = j.resolutions;
+      if (r && typeof r === 'object' && Object.keys(r).length > 0) {
+        return ['', 'Trecho `resolutions` (yarn) atual:', '', '```json', JSON.stringify({ resolutions: r }, null, 2), '```', ''].join('\n');
+      }
+    }
     const ov = j.overrides;
     if (ov && typeof ov === 'object' && Object.keys(ov).length > 0) {
       return ['', 'Trecho `overrides` (npm) atual:', '', '```json', JSON.stringify({ overrides: ov }, null, 2), '```', ''].join('\n');
@@ -399,14 +405,194 @@ function resolvedVersionHint(pkgName) {
   return '';
 }
 
+function versionVulnerableBeforeFix(pkgName, graph, sortedAlerts) {
+  const fromGraph = graph.resolvedVersion?.trim();
+  if (fromGraph) return fromGraph;
+  const fromManifest = resolvedVersionHint(pkgName);
+  if (fromManifest) return fromManifest;
+  for (const a of sortedAlerts) {
+    const dv = a.dependency?.version;
+    if (typeof dv === 'string' && dv.trim()) return dv.trim();
+    const sv = a.security_vulnerability?.package?.version;
+    if (typeof sv === 'string' && sv.trim()) return sv.trim();
+  }
+  return '—';
+}
+
 function relFromRepo(absPath) {
   return path.relative(REPO_ROOT, absPath).replace(/\\/g, '/') || '.';
 }
 
+function npmLsAllJson(cwd, pkgName) {
+  try {
+    const out = execFileSync('npm', ['ls', pkgName, '--all', '--json'], {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 50 * 1024 * 1024,
+      env: process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return JSON.parse(out);
+  } catch (e) {
+    const stdout = e.stdout;
+    if (stdout) {
+      try {
+        const s = typeof stdout === 'string' ? stdout : stdout.toString();
+        return JSON.parse(s);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function maxDepthToPkg(deps, pkgName, currentDepth) {
+  if (!deps || typeof deps !== 'object') return 0;
+  let max = 0;
+  for (const [name, meta] of Object.entries(deps)) {
+    if (name === pkgName) max = Math.max(max, currentDepth);
+    const sub = meta?.dependencies;
+    if (sub && typeof sub === 'object') {
+      max = Math.max(max, maxDepthToPkg(sub, pkgName, currentDepth + 1));
+    }
+  }
+  return max;
+}
+
+function findPkgVersionDeep(root, pkgName) {
+  let v = '';
+  function walk(depObj) {
+    if (!depObj || typeof depObj !== 'object') return;
+    for (const [name, meta] of Object.entries(depObj)) {
+      if (name === pkgName && typeof meta?.version === 'string') {
+        v = meta.version;
+        return;
+      }
+      if (meta?.dependencies) walk(meta.dependencies);
+    }
+  }
+  if (root.dependencies) walk(root.dependencies);
+  return v;
+}
+
+function chainsToPkg(deps, pkgName, chain) {
+  const out = [];
+  if (!deps || typeof deps !== 'object') return out;
+  const base = chain ?? [];
+  for (const [name, meta] of Object.entries(deps)) {
+    const c = [...base, name];
+    if (name === pkgName) out.push(c);
+    if (meta?.dependencies) out.push(...chainsToPkg(meta.dependencies, pkgName, c));
+  }
+  return out;
+}
+
+function pnpmWhyDepthFallback(pkgName, cwd) {
+  try {
+    const text = execFileSync('pnpm', ['why', pkgName], {
+      cwd,
+      encoding: 'utf8',
+      env: process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const lines = text.split(/\r?\n/).filter((l) => {
+      const t = l.trim();
+      return t.length > 0 && !/^Legend:/i.test(t);
+    });
+    const depthEst = Math.min(20, Math.max(1, Math.ceil(lines.length / 3)));
+    return {
+      maxDepth: depthEst,
+      resolvedVersion: '',
+      directParents: [],
+    };
+  } catch {
+    return { maxDepth: 4, resolvedVersion: '', directParents: [] };
+  }
+}
+
+function npmLsGraphInfo(pkgName, cwd) {
+  const j = npmLsAllJson(cwd, pkgName);
+  if (!j || typeof j !== 'object') {
+    return pnpmWhyDepthFallback(pkgName, cwd);
+  }
+  const deps = j.dependencies;
+  if (!deps || typeof deps !== 'object') {
+    return pnpmWhyDepthFallback(pkgName, cwd);
+  }
+  const maxDepth = maxDepthToPkg(deps, pkgName, 1);
+  const resolved = findPkgVersionDeep(j, pkgName);
+  if (maxDepth === 0 && !resolved) {
+    return pnpmWhyDepthFallback(pkgName, cwd);
+  }
+  const chains = chainsToPkg(deps, pkgName);
+  const parents = new Set();
+  for (const c of chains) {
+    const idx = c.lastIndexOf(pkgName);
+    if (idx > 0) parents.add(c[idx - 1]);
+  }
+  return {
+    maxDepth: maxDepth || 0,
+    resolvedVersion: resolved || '',
+    directParents: [...parents],
+  };
+}
+
+function dependencyRelationshipFromAlerts(alerts) {
+  for (const a of alerts) {
+    const r = a.dependency?.relationship;
+    if (r === 'direct') return 'direct';
+    if (r === 'indirect') return 'indirect';
+  }
+  return null;
+}
+
+function listTopLevelDepNames() {
+  const raw = readTextIfExists(path.join(PKG_ROOT, 'package.json'));
+  if (!raw) return [];
+  try {
+    const j = JSON.parse(raw);
+    const s = new Set();
+    for (const k of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+      const b = j[k];
+      if (b && typeof b === 'object') Object.keys(b).forEach((x) => s.add(x));
+    }
+    return [...s];
+  } catch {
+    return [];
+  }
+}
+
+function isMajorLeapResolvedToTarget(resolvedV, targetV) {
+  const a = semver.coerce(resolvedV);
+  const b = semver.coerce(targetV);
+  if (!a || !b) return false;
+  return semver.major(b) > semver.major(a);
+}
+
+function applyPackageJsonOverride(pkgName, version) {
+  const p = path.join(PKG_ROOT, 'package.json');
+  const raw = fs.readFileSync(p, 'utf8');
+  const j = JSON.parse(raw);
+  if (PACKAGE_MANAGER === 'pnpm') {
+    if (!j.pnpm) j.pnpm = {};
+    if (!j.pnpm.overrides) j.pnpm.overrides = {};
+    j.pnpm.overrides[pkgName] = version;
+  } else if (PACKAGE_MANAGER === 'yarn') {
+    if (!j.resolutions) j.resolutions = {};
+    const key = pkgName.startsWith('@') ? `**/${pkgName}` : `**/${pkgName}`;
+    j.resolutions[key] = version;
+  } else {
+    if (!j.overrides) j.overrides = {};
+    j.overrides[pkgName] = version;
+  }
+  fs.writeFileSync(p, `${JSON.stringify(j, null, 2)}\n`);
+}
+
 function formatUnifiedPrBody(opts) {
   const firstLineManual = opts.manualVerification
-    ? '⚠️ **VERIFICAÇÃO MANUAL OBRIGATÓRIA ANTES DO MERGE** — um ou mais bumps falharam, o audit local ainda acusa High/Critical ou há conflito de linhas semver; clone este branch, use o mesmo Node/gerenciador do repositório (`.nvmrc`/Corepack), rode install e testes, e só então revise o merge.'
-    : '**Correção consolidada automática** — um único PR para todos os alertas Critical/High com patch na API; execute CI e testes antes do merge conforme política do time.';
+    ? '⚠️ **VERIFICAÇÃO MANUAL OBRIGATÓRIA ANTES DO MERGE** — falha em bump/override, audit local ainda com findings, conflito de semver entre patches da API ou revisão de workspace/catalog necessária; clone o branch, alinhe Node/Corepack, rode install + `audit --audit-level low` e testes antes do merge.'
+    : '**Correção consolidada** — um único PR cobrindo alertas npm (Critical → Low) com patch na API quando disponível; rode CI e testes antes do merge.';
 
   const pkgs = opts.packages || [];
   const lines = [
@@ -414,21 +600,31 @@ function formatUnifiedPrBody(opts) {
     '',
     '## Contexto',
     '',
-    `**Um PR único** para todos os pacotes npm com alerta Critical/High em aberto e patch informado pela API. Raiz de pacotes: \`${relFromRepo(PKG_ROOT)}\`. Gerenciador detectado: **${opts.pmLabel}**.`,
+    `**Um PR único** para alertas Dependabot npm (todas as severidades tratadas pelo filtro) com patch informado pela API. Raiz: \`${relFromRepo(PKG_ROOT)}\`. Gerenciador: **${opts.pmLabel}**. Estratégia: bump direto (save-exact) → transitivo raso (\`pnpm add -E\` / equivalente) → **override/resolution** se grafo **> 2 níveis** ou **salto major** na transitiva, conforme árvore do guia.`,
     '',
-    '| Pacote | Versão neste PR | Direta? | Múltiplos consumidores (heurística) | Risco de quebra |',
-    '| --- | --- | --- | --- | --- |',
+    'Coluna **versão anterior**: resolução no grafo (`npm ls`, antes do PR), senão manifest, senão campo da API quando existir.',
+    '',
+    '| Pacote | Versão anterior (vulnerável) | Versão corrigida | Estratégia | API rel. | Prof. grafo | Pais no topo | Risco | Consumidores (heurística) |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
   ];
 
   for (const p of pkgs) {
+    const prevCell =
+      p.versionBeforeFix === '—' ? '—' : `\`${mdEscapePipe(p.versionBeforeFix)}\``;
     lines.push(
-      `| \`${p.pkgName}\` | \`${p.targetVersion}\` | ${p.wasDirect ? 'sim' : 'não'} | ${p.multiConsumer} | ${p.breakRisk} |`
+      `| \`${p.pkgName}\` | ${prevCell} | \`${mdEscapePipe(p.targetVersion)}\` | ${p.strategy} | ${p.apiRel} | ${p.graphDepth} | ${p.parentTopHint} | ${p.breakRisk} | ${p.multiConsumer} |`
     );
   }
 
   lines.push('', '## Onde cada pacote entra no grafo', '');
   for (const p of pkgs) {
-    lines.push(`### \`${p.pkgName}\` → \`${p.targetVersion}\``, '', p.whySummary, '');
+    const prevDisp = p.versionBeforeFix === '—' ? '—' : `\`${mdEscapePipe(p.versionBeforeFix)}\``;
+    lines.push(
+      `### \`${p.pkgName}\` — ${prevDisp} → \`${mdEscapePipe(p.targetVersion)}\``,
+      '',
+      p.whySummary,
+      ''
+    );
   }
 
   lines.push(
@@ -449,16 +645,16 @@ function formatUnifiedPrBody(opts) {
 
   lines.push('', '## Validação manual recomendada', '');
   lines.push(
-    `- **Node:** se existir \`.nvmrc\` ou \`.node-version\`, rode \`nvm use\` (ou Volta/asdf equivalente).`,
-    `- **Install:** na raiz \`${relFromRepo(PKG_ROOT)}\`: ${
+    `- **Node:** \`.nvmrc\` / \`.node-version\` quando existirem.`,
+    `- **Install:** em \`${relFromRepo(PKG_ROOT)}\`: ${
       PACKAGE_MANAGER === 'pnpm'
         ? '`pnpm install`'
         : PACKAGE_MANAGER === 'yarn'
           ? '`yarn install`'
-          : '`npm ci` ou `npm install` conforme lockfile'
+          : '`npm ci` ou `npm install`'
     }.`,
-    `- **Audit:** \`${PACKAGE_MANAGER === 'pnpm' ? 'pnpm audit --audit-level high' : 'npm audit --audit-level high'}\`.`,
-    `- **Testes:** comandos do \`package.json\` do repositório (\`test\`, \`build\`).`,
+    `- **Audit:** \`${PACKAGE_MANAGER === 'pnpm' ? 'pnpm audit --audit-level low' : 'npm audit --audit-level low'}\` (meta: nenhum finding acima do limiar).`,
+    `- **Testes:** scripts do \`package.json\` (\`test\`, \`build\`).`,
     ''
   );
 
@@ -469,15 +665,15 @@ function formatUnifiedPrBody(opts) {
   lines.push(
     '## Notas',
     '',
-    '- Duas linhas semver **incompatíveis** para o mesmo nome publicado podem exigir `pnpm.overrides` / `overrides` (npm) ou planos separados — este fluxo não gera overrides automáticos.',
-    '- **Múltiplos consumidores** é heurística sobre o texto do grafo (`pnpm why` / `npm ls`), não prova formal.',
+    '- Overrides/resolutions são aplicados só quando a árvore de decisão indica grafo profundo ou salto major na transitiva; bumps diretos usam sempre versão fixa.',
+    '- Profundidade e versão resolvida vêm principalmente de `npm ls --all --json`; em layouts puramente pnpm pode haver fallback heurístico.',
     ''
   );
 
   const overSnip = overridesSnippet();
   if (overSnip) lines.push(overSnip);
 
-  lines.push('', '**Antes do merge:** changelog se houver mudança de comportamento; CI verde.');
+  lines.push('', '**Antes do merge:** changelog se necessário; CI verde.');
   return lines.join('\n');
 }
 
@@ -650,7 +846,9 @@ function fetchDependabotAlerts() {
 }
 
 function severityRank(sev) {
-  return SEVERITY_ORDER[sev] ?? 99;
+  let s = String(sev || '').toLowerCase();
+  if (s === 'moderate') s = 'medium';
+  return SEVERITY_ORDER[s] ?? 99;
 }
 
 function patchedVersionFromAlert(alert) {
@@ -791,7 +989,7 @@ function run() {
   assertGhAuthOrExit();
   console.log(`PKG_ROOT=${relFromRepo(PKG_ROOT)} PM=${PACKAGE_MANAGER}`);
 
-  console.log('Buscando alertas Dependabot (critical/high)...');
+  console.log('Buscando alertas Dependabot (Critical / High / Moderate / Low, ecosystem npm)...');
 
   const workspaceYaml = readTextIfExists(path.join(REPO_ROOT, 'pnpm-workspace.yaml'));
 
@@ -806,10 +1004,11 @@ function run() {
 
   console.log(`Alertas Dependabot retornados pela API: ${alerts.length}`);
 
+  const allowedSeverities = new Set(['critical', 'high', 'medium', 'moderate', 'low']);
   const filtered = alerts.filter((a) => {
-    const sev = a.security_advisory?.severity;
+    const sev = String(a.security_advisory?.severity || '').toLowerCase();
     const eco = a.dependency?.package?.ecosystem;
-    return (sev === 'critical' || sev === 'high') && eco === 'npm';
+    return eco === 'npm' && allowedSeverities.has(sev);
   });
 
   filtered.sort((a, b) => {
@@ -828,15 +1027,12 @@ function run() {
       const e = a.dependency?.package?.ecosystem ?? 'unknown';
       byEco[e] = (byEco[e] ?? 0) + 1;
     }
-    console.log(
-      'Nenhum alerta critical/high (npm) na fila. Distribuição severity (todos):',
-      JSON.stringify(bySev)
-    );
+    console.log('Nenhum alerta npm (Critical/High/Moderate/Low) na fila. Severities (todos):', JSON.stringify(bySev));
     console.log('Distribuição ecosystem (todos):', JSON.stringify(byEco));
     return;
   }
 
-  console.log(`Alertas critical/high npm na fila: ${filtered.length}`);
+  console.log(`Alertas npm na fila (todas severidades): ${filtered.length}`);
 
   const groups = new Map();
   let skippedNoPatch = 0;
@@ -896,25 +1092,66 @@ function run() {
       );
 
       try {
+        const apiRelRaw = dependencyRelationshipFromAlerts(sortedAlerts);
+        const manifestDirect = isDirectJsDependency(pkgName);
+        const isDirect =
+          apiRelRaw === 'direct' || (apiRelRaw !== 'indirect' && manifestDirect);
+        const apiRelDisp = apiRelRaw ?? (manifestDirect ? 'direct (manifest)' : 'indirect (inferido)');
+
+        const graph = npmLsGraphInfo(pkgName, PKG_ROOT);
+        const versionBeforeFix = versionVulnerableBeforeFix(pkgName, graph, sortedAlerts);
+        const majorLeap = isMajorLeapResolvedToTarget(graph.resolvedVersion, targetVersion);
+        const topLevel = new Set(listTopLevelDepNames());
+        const parentsTop = graph.directParents.filter((p) => topLevel.has(p));
+        const parentTopHint = parentsTop.length > 0 ? parentsTop.map((x) => `\`${x}\``).join(', ') : '—';
+
+        let strategy = '';
+
         if (ghostPackage(pkgName, PKG_ROOT)) {
-          console.log(`Ghost/no dependents aparente: ${pkgName}, rodando install para alinhar lock`);
+          console.log(`Ghost/no dependents aparente: ${pkgName}, alinhando lock`);
           pmInstall(PKG_ROOT);
         }
 
-        pmAdd(pkgName, targetVersion, PKG_ROOT);
+        if (isDirect) {
+          strategy = 'bump direto (save-exact)';
+          pmAdd(pkgName, targetVersion, PKG_ROOT);
+        } else if (graph.maxDepth > 2 || majorLeap) {
+          strategy =
+            graph.maxDepth > 2
+              ? 'override (grafo > 2 níveis)'
+              : 'override (salto major na transitiva vs patch)';
+          applyPackageJsonOverride(pkgName, targetVersion);
+        } else {
+          strategy = 'bump transitivo (pin na raiz)';
+          try {
+            pmAdd(pkgName, targetVersion, PKG_ROOT);
+          } catch (e1) {
+            strategy = 'override (fallback após falha no add)';
+            applyPackageJsonOverride(pkgName, targetVersion);
+            manualVerification = true;
+            failures.push(`\`${pkgName}\`: pin na raiz falhou — aplicado override. (${String(e1.message || e1)})`);
+          }
+        }
+
         pmInstall(PKG_ROOT);
 
         const ws = whySummary(pkgName, PKG_ROOT);
         const mc = multiConsumerHeuristic(ws);
-        const wasDirect = isDirectJsDependency(pkgName);
         const curVer = resolvedVersionHint(pkgName);
-        const breakRisk = majorBumpRisk(curVer, targetVersion);
+        const breakRisk = majorBumpRisk(
+          manifestDirect ? curVer : graph.resolvedVersion || curVer,
+          targetVersion
+        );
 
         packageRows.push({
           pkgName,
+          versionBeforeFix,
           targetVersion,
+          strategy,
+          apiRel: apiRelDisp,
+          graphDepth: String(graph.maxDepth),
+          parentTopHint,
           whySummary: ws,
-          wasDirect,
           multiConsumer: mc.summary,
           breakRisk,
           sortedAlerts,
@@ -929,23 +1166,27 @@ function run() {
       } catch (err) {
         manualVerification = true;
         failures.push(`\`${pkgName}\`@${targetVersion}: ${String(err.message || err)}`);
-        console.error(`Falha bump ${pkgName}:`, err.message || err);
+        console.error(`Falha ${pkgName}:`, err.message || err);
       }
     }
 
-    if (pmAuditFailsHigh(PKG_ROOT)) {
+    if (pmAuditFailsAny(PKG_ROOT)) {
       manualVerification = true;
-      failures.push('`audit --audit-level high` ainda reporta vulnerabilidades após os bumps.');
+      failures.push('`audit --audit-level low` ainda reporta vulnerabilidades após remediação.');
     }
 
-    const title = `security: Dependabot Critical/High (${filtered.length} alertas, ${packageRows.length} pacotes)`;
+    const title = `security: Dependabot (${filtered.length} alertas, ${packageRows.length} pacotes)`;
 
     const bodyMarkdown = formatUnifiedPrBody({
       packages: packageRows.map((r) => ({
         pkgName: r.pkgName,
+        versionBeforeFix: r.versionBeforeFix,
         targetVersion: r.targetVersion,
+        strategy: r.strategy,
+        apiRel: r.apiRel,
+        graphDepth: r.graphDepth,
+        parentTopHint: r.parentTopHint,
         whySummary: r.whySummary,
-        wasDirect: r.wasDirect,
         multiConsumer: r.multiConsumer,
         breakRisk: r.breakRisk,
       })),
