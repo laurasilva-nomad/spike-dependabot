@@ -360,6 +360,10 @@ function syncDefaultBranch() {
   exec(`git reset --hard ${JSON.stringify(`origin/${base}`)}`, { cwd: PKG_ROOT });
 }
 
+function gitPushAutomationBranch(slug) {
+  exec(`git push -u origin HEAD:refs/heads/${slug} --force`, { cwd: PKG_ROOT });
+}
+
 function createPR(pkg, ver, alertId, customBody, auditNote) {
   const base = defaultBranch();
   const slug = branchSlug(pkg, alertId);
@@ -378,7 +382,7 @@ function createPR(pkg, ver, alertId, customBody, auditNote) {
     ].join('\n');
   const body = auditNote ? `${baseBody}\n\n${auditNote}` : baseBody;
 
-  exec(`git checkout -b ${JSON.stringify(slug)}`, { cwd: PKG_ROOT });
+  exec(`git checkout -B ${JSON.stringify(slug)}`, { cwd: PKG_ROOT });
   exec('git add .', { cwd: PKG_ROOT });
   const status = exec('git status --porcelain', { cwd: PKG_ROOT });
   if (!status.trim()) {
@@ -388,7 +392,7 @@ function createPR(pkg, ver, alertId, customBody, auditNote) {
     return;
   }
   commitWithMessage(`${title}\n`);
-  exec(`git push -u origin HEAD`, { cwd: PKG_ROOT });
+  gitPushAutomationBranch(slug);
   ghPrCreate(base, slug, title, body);
   console.log(`PR criada: ${slug}`);
   exec(`git checkout ${JSON.stringify(base)}`, { cwd: PKG_ROOT });

@@ -17,6 +17,6 @@ alwaysApply: false
 
 ## Estilo e mudanças
 
-- Reutilizar **`envWithGhCliAuth`**, **`pnpmExec`**, **`ghPrCreate`**, helpers de path REST/UI.
+- Reutilizar **`envWithGhCliAuth`**, **`pnpmExec`**, **`ghPrCreate`**, **`gitPushAutomationBranch`** (push com `--force` só em `security/fix-*` para sobrescrever branch remota órfã).
 - Ao alterar `package.json`, respeitar **versões exatas** do projeto.
 - Alinhar mensagens de erro a URLs canônicas (UI vs REST) quando o falhanço for por API/permissão.
