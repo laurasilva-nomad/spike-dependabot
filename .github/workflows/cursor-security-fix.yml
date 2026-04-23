@@ -1,9 +1,14 @@
-name: 🛡️ Cursor Security Fixer
+name: Cursor Security Fixer
 
 on:
   schedule:
-    - cron: '0 8 * * 1-5' # Roda às 08h de seg a sex
-  workflow_dispatch: # Permite rodar manualmente pelo botão no GitHub
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      package_root:
+        description: Caminho relativo ao package.json (ex. javascript ou .)
+        required: false
+        default: 'javascript'
 
 jobs:
   fix:
@@ -16,6 +21,7 @@ jobs:
     env:
       GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
       GH_REPO_TOKEN: ${{ github.token }}
+      SECURITY_PACKAGE_ROOT: ${{ github.event.inputs.package_root || vars.SECURITY_PACKAGE_ROOT || 'javascript' }}
 
     steps:
       - name: Checkout
@@ -24,27 +30,33 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           package-manager-cache: false
-
-      - name: Setup PNPM
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          cache: true
-          cache_dependency_path: javascript/pnpm-lock.yaml
-          package_json_file: javascript/package.json
 
       - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Install JS dependencies
-        working-directory: javascript
-        run: pnpm install --no-frozen-lockfile
+      - name: Instalar dependências (detecta npm, pnpm ou yarn pelo lockfile)
+        env:
+          ROOT: ${{ env.SECURITY_PACKAGE_ROOT }}
+        run: |
+          set -euo pipefail
+          test -f "${ROOT}/package.json"
+          cd "${ROOT}"
+          if [ -f pnpm-lock.yaml ] || [ -f "${GITHUB_WORKSPACE}/pnpm-lock.yaml" ] || [ -f "${GITHUB_WORKSPACE}/pnpm-workspace.yaml" ]; then
+            corepack enable
+            corepack prepare pnpm@9 --activate
+            pnpm install --no-frozen-lockfile
+          elif [ -f yarn.lock ]; then
+            corepack enable
+            yarn install
+          else
+            npm install
+          fi
 
       - name: Dependabot REST (diagnóstico)
         run: |
@@ -59,34 +71,28 @@ jobs:
           REPO="${{ github.repository }}"
           REST_PATH="/repos/${REPO}/dependabot/alerts"
           REST_LIST="${REST_PATH}?state=open&per_page=100"
-          echo "Padronização: UI (navegador) ≠ REST (gh api)."
-          echo "  UI:  https://github.com/${REPO}/security/dependabot"
-          echo "  REST GET (api.github.com): ${REST_PATH}"
-          echo "Chamada: GET ${REST_LIST}"
+          echo "UI: https://github.com/${REPO}/security/dependabot"
+          echo "REST GET: ${REST_LIST}"
           if ! gh api \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "${REST_LIST}" \
             --jq 'length'; then
-            echo "::error::REST ${REST_PATH} falhou. /security/dependabot/alerts na web não existe (use a URL de UI acima). 403/404: permissão, Dependabot alerts desligado ou política da org. Secret opcional: GH_DEPENDABOT_ALERTS_TOKEN."
-            gh api \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "${REST_LIST}" 2>&1 || true
+            echo "::error::REST ${REST_PATH} falhou. Confira permissões e secret GH_DEPENDABOT_ALERTS_TOKEN se necessário."
             exit 1
           fi
-          echo "Primeiros alertas:"
           gh api \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "${REST_LIST}" \
             --jq '.[:15] | map({n:.number,sev:.security_advisory.severity,eco:.dependency.package.ecosystem,pkg:.dependency.package.name,pth:.dependency.manifest_path})'
 
-      - name: 🤖 Execute Cursor Fix Logic
-        working-directory: javascript
+      - name: Execute Cursor Fix Logic
         env:
           CURSOR_TOKEN: ${{ secrets.CURSOR_TOKEN }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/cursor-fixer.js
+          SECURITY_PACKAGE_ROOT: ${{ env.SECURITY_PACKAGE_ROOT }}
+        run: |
+          node "${GITHUB_WORKSPACE}/${SECURITY_PACKAGE_ROOT}/scripts/cursor-fixer.js"

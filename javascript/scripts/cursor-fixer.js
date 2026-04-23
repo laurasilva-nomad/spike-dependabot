@@ -4,16 +4,26 @@ const os = require('os');
 const semver = require('semver');
 const { execSync, execFileSync } = require('child_process');
 
+function findRepoRootFrom(startDir) {
+  let d = path.resolve(startDir);
+  const { root } = path.parse(d);
+  while (d !== root) {
+    if (fs.existsSync(path.join(d, '.git'))) return d;
+    d = path.dirname(d);
+  }
+  throw new Error('Raiz git não encontrada (subindo a partir do script).');
+}
+
 const SEVERITY_ORDER = { critical: 0, high: 1 };
-const REPO_ROOT = path.join(__dirname, '..', '..');
-const PKG_ROOT = path.join(REPO_ROOT, 'javascript');
-const RULES_MDC = path.join(
-  REPO_ROOT,
-  '.cursor',
-  'rules',
-  'verify-issues-dependabot.mdc'
-);
-const RULES_MD = path.join(REPO_ROOT, 'rules', 'verify-issues-dependabot.md');
+const REPO_ROOT =
+  process.env.GITHUB_WORKSPACE != null && String(process.env.GITHUB_WORKSPACE).length > 0
+    ? path.resolve(process.env.GITHUB_WORKSPACE)
+    : findRepoRootFrom(__dirname);
+const GIT_CWD = REPO_ROOT;
+const UNIFIED_BRANCH = 'security/dependabot-critical-high';
+
+let PKG_ROOT = null;
+let PACKAGE_MANAGER = null;
 
 function tokenFromEnv(env) {
   return (
@@ -23,10 +33,6 @@ function tokenFromEnv(env) {
     env.GITHUB_TOKEN ||
     ''
   );
-}
-
-function resolveGhToken() {
-  return tokenFromEnv(process.env);
 }
 
 function envWithGhCliAuth(env) {
@@ -60,20 +66,191 @@ function exec(cmd, options = {}) {
   const mergedEnv = envWithGhCliAuth({ ...process.env, ...(options.env || {}) });
   return execSync(cmd, {
     encoding: 'utf8',
-    cwd: options.cwd ?? PKG_ROOT,
+    cwd: options.cwd ?? GIT_CWD,
     env: mergedEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: true,
   });
 }
 
-function pnpmExec(args, cwd = PKG_ROOT) {
-  return execFileSync('pnpm', args, {
+function readTextIfExists(filePath) {
+  return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+}
+
+function detectPackageRoot() {
+  const explicit = process.env.SECURITY_PACKAGE_ROOT || process.env.PACKAGE_ROOT;
+  if (explicit) {
+    const p = path.join(REPO_ROOT, explicit.replace(/^\//, ''));
+    if (fs.existsSync(path.join(p, 'package.json'))) return path.resolve(p);
+    throw new Error(`SECURITY_PACKAGE_ROOT=${explicit} sem package.json`);
+  }
+  const candidates = ['javascript', '.', 'frontend', 'web', 'apps/web', 'packages/app'];
+  for (const c of candidates) {
+    const p = c === '.' ? REPO_ROOT : path.join(REPO_ROOT, c);
+    if (fs.existsSync(path.join(p, 'package.json'))) return path.resolve(p);
+  }
+  throw new Error('Nenhuma raiz com package.json encontrada; defina SECURITY_PACKAGE_ROOT.');
+}
+
+function detectPackageManager(pkgRoot) {
+  const parent = path.dirname(pkgRoot);
+  const hasPnpmLock = fs.existsSync(path.join(pkgRoot, 'pnpm-lock.yaml'));
+  const hasYarnLock = fs.existsSync(path.join(pkgRoot, 'yarn.lock'));
+  const hasNpmLock = fs.existsSync(path.join(pkgRoot, 'package-lock.json'));
+  const wsPnpm = fs.existsSync(path.join(parent, 'pnpm-workspace.yaml'));
+  const rootPnpm = fs.existsSync(path.join(REPO_ROOT, 'pnpm-lock.yaml'));
+  if (hasPnpmLock || wsPnpm || rootPnpm) return 'pnpm';
+  if (hasYarnLock) return 'yarn';
+  if (hasNpmLock) return 'npm';
+  if (fs.existsSync(path.join(pkgRoot, 'package.json'))) return 'npm';
+  return 'npm';
+}
+
+function pmAdd(pkgName, version, cwd) {
+  const spec = `${pkgName}@${version}`;
+  const pm = PACKAGE_MANAGER;
+  if (pm === 'pnpm') {
+    execFileSync('pnpm', ['add', '-E', spec, '--ignore-scripts'], {
+      cwd,
+      encoding: 'utf8',
+      env: process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return;
+  }
+  if (pm === 'yarn') {
+    try {
+      execFileSync('yarn', ['add', spec, '--exact'], {
+        cwd,
+        encoding: 'utf8',
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch {
+      execFileSync('yarn', ['add', spec, '--exact', '--ignore-scripts'], {
+        cwd,
+        encoding: 'utf8',
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    }
+    return;
+  }
+  execFileSync('npm', ['install', spec, '--save-exact', '--ignore-scripts'], {
     cwd,
     encoding: 'utf8',
     env: process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+}
+
+function pmInstall(cwd) {
+  const pm = PACKAGE_MANAGER;
+  if (pm === 'pnpm') {
+    execFileSync('pnpm', ['install', '--no-frozen-lockfile'], {
+      cwd,
+      encoding: 'utf8',
+      env: process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return;
+  }
+  if (pm === 'yarn') {
+    execFileSync('yarn', ['install'], {
+      cwd,
+      encoding: 'utf8',
+      env: process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return;
+  }
+  execFileSync('npm', ['install'], {
+    cwd,
+    encoding: 'utf8',
+    env: process.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
+function whySummary(pkgName, cwd) {
+  const pm = PACKAGE_MANAGER;
+  try {
+    let out = '';
+    if (pm === 'pnpm') {
+      out = execFileSync('pnpm', ['why', pkgName], {
+        cwd,
+        encoding: 'utf8',
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } else if (pm === 'yarn') {
+      try {
+        out = execFileSync('yarn', ['why', pkgName], {
+          cwd,
+          encoding: 'utf8',
+          env: process.env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch {
+        out = execFileSync('npm', ['ls', pkgName, '--all'], {
+          cwd,
+          encoding: 'utf8',
+          env: process.env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      }
+    } else {
+      out = execFileSync('npm', ['ls', pkgName, '--all'], {
+        cwd,
+        encoding: 'utf8',
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    }
+    const lines = out
+      .trim()
+      .split(/\r?\n/)
+      .filter((l) => {
+        const t = l.trim();
+        return t.length > 0 && !/^Legend:/i.test(t);
+      })
+      .slice(0, 36);
+    if (lines.length === 0) return '_Sem saída útil do grafo local._';
+    return lines.map((l) => `- ${l.trim()}`).join('\n');
+  } catch {
+    return '_Falha ao inspecionar cadeia de dependências (`pnpm why` / `npm ls`)._';
+  }
+}
+
+function multiConsumerHeuristic(whyText) {
+  const lines = whyText.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const depthOrBullet = lines.filter((l) => /^[\s│├└─\-*]/.test(l) || /^\d+\s+/.test(l));
+  const n = Math.max(1, depthOrBullet.length > 3 ? Math.ceil(depthOrBullet.length / 4) : lines.length > 8 ? 2 : 1);
+  const likelyMulti = lines.length > 12 || depthOrBullet.length > 6;
+  return { likelyMulti, summary: likelyMulti ? 'provável (várias linhas no grafo)' : 'único ou poucos caminhos (heurística)' };
+}
+
+function pmAuditFailsHigh(cwd) {
+  try {
+    if (PACKAGE_MANAGER === 'pnpm') {
+      execFileSync('pnpm', ['audit', '--audit-level', 'high'], {
+        cwd,
+        encoding: 'utf8',
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } else {
+      execFileSync('npm', ['audit', '--audit-level', 'high'], {
+        cwd,
+        encoding: 'utf8',
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function ghPrCreate(baseBranch, headBranch, title, body) {
@@ -82,7 +259,7 @@ function ghPrCreate(baseBranch, headBranch, title, body) {
     'gh',
     ['pr', 'create', '--base', baseBranch, '--head', headBranch, '--title', title, '--body', body],
     {
-      cwd: PKG_ROOT,
+      cwd: GIT_CWD,
       env: mergedEnv,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -90,28 +267,12 @@ function ghPrCreate(baseBranch, headBranch, title, body) {
   );
 }
 
-function readTextIfExists(filePath) {
-  return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
-}
-
-function stripMdcFrontmatter(text) {
-  if (!text.startsWith('---\n')) return text;
-  const end = text.indexOf('\n---\n', 4);
-  if (end === -1) return text;
-  return text.slice(end + 5).trimStart();
-}
-
-function rulesContent() {
-  if (fs.existsSync(RULES_MDC)) return stripMdcFrontmatter(readTextIfExists(RULES_MDC));
-  return readTextIfExists(RULES_MD);
-}
-
 function ghRepoSlug() {
   const envRepo = process.env.GITHUB_REPOSITORY;
   if (envRepo && envRepo.includes('/')) return envRepo.trim();
   try {
     return exec('gh repo view --json nameWithOwner -q .nameWithOwner', {
-      cwd: REPO_ROOT,
+      cwd: GIT_CWD,
     }).trim();
   } catch {
     throw new Error(
@@ -173,32 +334,22 @@ function isDirectJsDependency(pkgName) {
   }
 }
 
-function pnpmWhySummary(pkgName) {
-  try {
-    const out = pnpmExec(['why', pkgName]);
-    const lines = out
-      .trim()
-      .split(/\r?\n/)
-      .filter((l) => {
-        const t = l.trim();
-        return t.length > 0 && !/^Legend:/i.test(t);
-      })
-      .slice(0, 28);
-    if (lines.length === 0) return '_Sem saída útil do `pnpm why`._';
-    return lines.map((l) => `- ${l.trim()}`).join('\n');
-  } catch {
-    return '_`pnpm why` falhou._';
-  }
-}
-
-function pnpmOverridesSnippet() {
+function overridesSnippet() {
   const raw = readTextIfExists(path.join(PKG_ROOT, 'package.json'));
   if (!raw) return '';
   try {
     const j = JSON.parse(raw);
-    const o = j.pnpm?.overrides;
-    if (!o || typeof o !== 'object' || Object.keys(o).length === 0) return '';
-    return ['', 'Trecho `pnpm.overrides` atual no manifest:', '', '```json', JSON.stringify({ pnpm: { overrides: o } }, null, 2), '```', ''].join('\n');
+    if (PACKAGE_MANAGER === 'pnpm') {
+      const o = j.pnpm?.overrides;
+      if (o && typeof o === 'object' && Object.keys(o).length > 0) {
+        return ['', 'Trecho `pnpm.overrides` atual:', '', '```json', JSON.stringify({ pnpm: { overrides: o } }, null, 2), '```', ''].join('\n');
+      }
+    }
+    const ov = j.overrides;
+    if (ov && typeof ov === 'object' && Object.keys(ov).length > 0) {
+      return ['', 'Trecho `overrides` (npm) atual:', '', '```json', JSON.stringify({ overrides: ov }, null, 2), '```', ''].join('\n');
+    }
+    return '';
   } catch {
     return '';
   }
@@ -222,82 +373,111 @@ function maxPatchedVersionStrings(ids) {
   return best;
 }
 
-function formatSecurityPrBody(opts) {
-  const alerts =
-    opts.alerts && opts.alerts.length > 0 ? opts.alerts : opts.alert ? [opts.alert] : [];
+function majorBumpRisk(currentHint, target) {
+  const raw = typeof currentHint === 'string' ? currentHint.trim() : '';
+  const a = semver.coerce(raw || undefined);
+  const b = semver.coerce(target);
+  if (!b) return 'desconhecido';
+  if (!raw || !a) return 'transitiva ou não declarada diretamente — conferir grafo e semver resolvido';
+  if (semver.major(b) > semver.major(a)) return 'alto (major)';
+  if (semver.major(a) === semver.major(b) && semver.gt(b, a)) return 'médio/alto (minor ou patch grande)';
+  return 'baixo (patch ou alinhado)';
+}
+
+function resolvedVersionHint(pkgName) {
+  const raw = readTextIfExists(path.join(PKG_ROOT, 'package.json'));
+  if (!raw) return '';
+  try {
+    const j = JSON.parse(raw);
+    for (const k of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+      const v = j[k]?.[pkgName];
+      if (typeof v === 'string') return v.replace(/^[\^~>=<]+\s*/, '').trim();
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function relFromRepo(absPath) {
+  return path.relative(REPO_ROOT, absPath).replace(/\\/g, '/') || '.';
+}
+
+function formatUnifiedPrBody(opts) {
+  const firstLineManual = opts.manualVerification
+    ? '⚠️ **VERIFICAÇÃO MANUAL OBRIGATÓRIA ANTES DO MERGE** — um ou mais bumps falharam, o audit local ainda acusa High/Critical ou há conflito de linhas semver; clone este branch, use o mesmo Node/gerenciador do repositório (`.nvmrc`/Corepack), rode install e testes, e só então revise o merge.'
+    : '**Correção consolidada automática** — um único PR para todos os alertas Critical/High com patch na API; execute CI e testes antes do merge conforme política do time.';
+
+  const pkgs = opts.packages || [];
   const lines = [
+    firstLineManual,
+    '',
     '## Contexto',
     '',
-    '**Um PR por pacote.** A versão aplicada é a **maior** (semver) entre os patches que a API do Dependabot devolve para cada alerta na tabela — um bump cobre todos quando a linha de versão é compatível.',
+    `**Um PR único** para todos os pacotes npm com alerta Critical/High em aberto e patch informado pela API. Raiz de pacotes: \`${relFromRepo(PKG_ROOT)}\`. Gerenciador detectado: **${opts.pmLabel}**.`,
     '',
-    '| Alerta | Sev | Intervalo (advisory) | Patch indicado (API) |',
-    '| --- | --- | --- | --- |',
+    '| Pacote | Versão neste PR | Direta? | Múltiplos consumidores (heurística) | Risco de quebra |',
+    '| --- | --- | --- | --- | --- |',
   ];
-  for (const a of alerts) {
+
+  for (const p of pkgs) {
+    lines.push(
+      `| \`${p.pkgName}\` | \`${p.targetVersion}\` | ${p.wasDirect ? 'sim' : 'não'} | ${p.multiConsumer} | ${p.breakRisk} |`
+    );
+  }
+
+  lines.push('', '## Onde cada pacote entra no grafo', '');
+  for (const p of pkgs) {
+    lines.push(`### \`${p.pkgName}\` → \`${p.targetVersion}\``, '', p.whySummary, '');
+  }
+
+  lines.push(
+    '## Tabela Dependabot (consolidada)',
+    '',
+    '| Alerta | Pacote | Sev | Intervalo (advisory) | Patch (API) |',
+    '| --- | --- | --- | --- | --- |'
+  );
+
+  for (const a of opts.allAlerts) {
     const an = a.number ?? 0;
+    const pkg = a.dependency?.package?.name ?? '—';
     const sev = a.security_advisory?.severity ?? '—';
     const vr = mdEscapePipe(vulnerableRangeFromAlert(a));
     const pv = patchedVersionFromAlert(a) || '—';
-    lines.push(`| [#${an}](${dependabotAlertPermalink(an)}) | ${sev} | ${vr} | \`${pv}\` |`);
+    lines.push(`| [#${an}](${dependabotAlertPermalink(an)}) | \`${pkg}\` | ${sev} | ${vr} | \`${pv}\` |`);
   }
+
+  lines.push('', '## Validação manual recomendada', '');
   lines.push(
-    '',
-    `**Pacote:** \`${opts.pkgName}\` · **versão única neste PR:** \`${opts.targetVersion}\` · manifest \`javascript/package.json\` · lock \`javascript/pnpm-lock.yaml\`.`,
-    '',
-    '- Escopo do workflow: alertas **critical/high** (npm).',
-    '',
-    '## Cadeias (resumo)',
-    '',
-    opts.whySummary,
-    '',
-    '## Grafo / bump',
-    '',
+    `- **Node:** se existir \`.nvmrc\` ou \`.node-version\`, rode \`nvm use\` (ou Volta/asdf equivalente).`,
+    `- **Install:** na raiz \`${relFromRepo(PKG_ROOT)}\`: ${
+      PACKAGE_MANAGER === 'pnpm'
+        ? '`pnpm install`'
+        : PACKAGE_MANAGER === 'yarn'
+          ? '`yarn install`'
+          : '`npm ci` ou `npm install` conforme lockfile'
+    }.`,
+    `- **Audit:** \`${PACKAGE_MANAGER === 'pnpm' ? 'pnpm audit --audit-level high' : 'npm audit --audit-level high'}\`.`,
+    `- **Testes:** comandos do \`package.json\` do repositório (\`test\`, \`build\`).`,
+    ''
   );
 
-  if (opts.ghost) {
-    lines.push(
-      '`pnpm why --json` não encontrou grafo estável (órfão / lock inconsistente). Foi rodado `pnpm install --no-frozen-lockfile` para alinhar lock ao manifest; revisar se ainda falta bump explícito ou override.'
-    );
-  } else if (opts.wasDirectBefore) {
-    lines.push(
-      `Dependência **direta** em \`javascript/package.json\` antes deste PR: bump com \`pnpm add -E ${opts.pkgName}@${opts.targetVersion}\` mantém pin exato (sem \`^\`).`
-    );
-  } else {
-    lines.push(
-      `Antes do PR o pacote **não** estava como dependência direta no manifest; veio como **transitivo**. Subir apenas pacotes “do topo” pode não corrigir todas as linhas — aqui \`pnpm add -E ${opts.pkgName}@${opts.targetVersion}\` fixa manifest + lock.`,
-      '',
-      'Duas linhas incompatíveis do mesmo pacote (ex. picomatch 2.x e 4.x) podem exigir **pnpm.overrides** cirúrgicos; este fluxo não gera overrides automáticos.'
-    );
+  if (opts.failures.length > 0) {
+    lines.push('## Falhas na automação', '', ...opts.failures.map((f) => `- ${f}`), '');
   }
 
-  if (opts.catalogHint) {
-    lines.push(
-      '',
-      '**Catalog:** workspace com **catalog** + nome no YAML — alinhar também no bloco `catalog` se for a fonte da verdade.'
-    );
-  }
+  lines.push(
+    '## Notas',
+    '',
+    '- Duas linhas semver **incompatíveis** para o mesmo nome publicado podem exigir `pnpm.overrides` / `overrides` (npm) ou planos separados — este fluxo não gera overrides automáticos.',
+    '- **Múltiplos consumidores** é heurística sobre o texto do grafo (`pnpm why` / `npm ls`), não prova formal.',
+    ''
+  );
 
-  const conclusaoSteps = opts.ghost
-    ? [
-        '1. Branch a partir da default branch atualizada.',
-        '2. `pnpm install --no-frozen-lockfile` após detecção de grafo instável.',
-      ]
-    : [
-        '1. `git fetch` + reset para `origin/<default>`.',
-        `2. \`pnpm add -E ${opts.pkgName}@${opts.targetVersion} --ignore-scripts\`.`,
-        '3. `pnpm install --no-frozen-lockfile`.',
-        '4. `pnpm audit --audit-level high` (checagem local; CI manda).',
-      ];
-  lines.push('', '## Conclusão', '', conclusaoSteps.join('\n'));
-  if (opts.auditResidualHighGate && !opts.ghost) {
-    lines.push(
-      '',
-      '`pnpm audit --audit-level high` ainda acusa algo após o bump: pode ser transitiva remanescente, outro CVE ou pacote fora deste PR.'
-    );
-  }
-  const overSnip = pnpmOverridesSnippet();
+  const overSnip = overridesSnippet();
   if (overSnip) lines.push(overSnip);
-  lines.push('', '**Antes do merge:** changelog se não for só patch; CI verde.');
+
+  lines.push('', '**Antes do merge:** changelog se houver mudança de comportamento; CI verde.');
   return lines.join('\n');
 }
 
@@ -461,8 +641,7 @@ function fetchDependabotAlerts() {
           `UI GitHub (sem /alerts no path): ${dependabotAlertsUiUrl(slug)}`,
           `REST gh api: GET ${dependabotAlertsRestApiUrl(slug)}?state=open`,
           'Confira: job.permissions.security-events: read;',
-          'na org: Actions → General → Workflow permissions não pode remover security-events do GITHUB_TOKEN;',
-          'ou GH_REPO_TOKEN / GH_DEPENDABOT_ALERTS_TOKEN no ambiente do job.',
+          'GH_REPO_TOKEN / GH_DEPENDABOT_ALERTS_TOKEN no ambiente do job.',
           'Doc: https://docs.github.com/en/rest/dependabot/alerts',
         ].join(' ')
       );
@@ -498,16 +677,20 @@ function patchedVersionFromAlert(alert) {
   return '';
 }
 
-function branchSlugForPackage(pkgName) {
-  const s = pkgName.replace(/^@/, '').replace(/\//g, '-');
-  return `security/fix-${s}`;
+function semverLineConflict(patchIds) {
+  const majors = new Set();
+  for (const p of patchIds) {
+    const c = semver.coerce(p);
+    if (c) majors.add(semver.major(c));
+  }
+  return majors.size > 1;
 }
 
 function commitWithMessage(message) {
   const f = path.join(os.tmpdir(), `gitmsg-${process.pid}.txt`);
   fs.writeFileSync(f, message, 'utf8');
   try {
-    exec(`git commit -F ${JSON.stringify(f)}`, { cwd: PKG_ROOT });
+    exec(`git commit -F ${JSON.stringify(f)}`, { cwd: GIT_CWD });
   } finally {
     fs.unlinkSync(f);
   }
@@ -518,7 +701,7 @@ function defaultBranch() {
   if (b) return b;
   try {
     return exec('gh repo view --json defaultBranchRef -q .defaultBranchRef.name', {
-      cwd: PKG_ROOT,
+      cwd: GIT_CWD,
     }).trim();
   } catch {
     return 'main';
@@ -527,20 +710,20 @@ function defaultBranch() {
 
 function syncDefaultBranch() {
   const base = defaultBranch();
-  exec('git fetch origin', { cwd: PKG_ROOT });
-  exec(`git checkout ${JSON.stringify(base)}`, { cwd: PKG_ROOT });
-  exec(`git reset --hard ${JSON.stringify(`origin/${base}`)}`, { cwd: PKG_ROOT });
+  exec('git fetch origin', { cwd: GIT_CWD });
+  exec(`git checkout ${JSON.stringify(base)}`, { cwd: GIT_CWD });
+  exec(`git reset --hard ${JSON.stringify(`origin/${base}`)}`, { cwd: GIT_CWD });
 }
 
 function gitPushAutomationBranch(slug) {
-  exec(`git push -u origin HEAD:refs/heads/${slug} --force`, { cwd: PKG_ROOT });
+  exec(`git push -u origin HEAD:refs/heads/${slug} --force`, { cwd: GIT_CWD });
 }
 
 function findOpenPrNumberForHead(slug) {
   try {
     const out = exec(
       `gh pr list --head ${JSON.stringify(slug)} --state open --json number -q '.[0].number'`,
-      { cwd: PKG_ROOT }
+      { cwd: GIT_CWD }
     ).trim();
     if (!out || out === 'null') return null;
     const n = Number(out);
@@ -558,7 +741,7 @@ function ghPrEditBody(prNumber, body) {
       'gh',
       ['pr', 'edit', String(prNumber), '--body-file', f],
       {
-        cwd: PKG_ROOT,
+        cwd: GIT_CWD,
         env: envWithGhCliAuth(process.env),
         encoding: 'utf8',
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -569,60 +752,48 @@ function ghPrEditBody(prNumber, body) {
   }
 }
 
-function createOrUpdateSecurityPR(params) {
-  const { pkgName, targetVersion, alerts, bodyMarkdown } = params;
-  const base = defaultBranch();
-  const slug = branchSlugForPackage(pkgName);
-  const nums = [...new Set(alerts.map((a) => a.number))].sort((x, y) => x - y);
-  const title =
-    nums.length <= 3
-      ? `security: bump ${pkgName} to ${targetVersion} (Dependabot ${nums.map((n) => `#${n}`).join(' ')})`
-      : `security: bump ${pkgName} to ${targetVersion} (${nums.length} alertas Dependabot)`;
-
-  exec(`git checkout -B ${JSON.stringify(slug)}`, { cwd: PKG_ROOT });
-  exec('git add .', { cwd: PKG_ROOT });
-  const status = exec('git status --porcelain', { cwd: PKG_ROOT });
-  const hasChanges = Boolean(status.trim());
-
-  if (hasChanges) {
-    commitWithMessage(`${title}\n`);
-    gitPushAutomationBranch(slug);
+function gitAddPackageScope() {
+  const rel = path.relative(REPO_ROOT, PKG_ROOT).replace(/\\/g, '/');
+  if (!rel || rel === '.') {
+    exec('git add -A', { cwd: GIT_CWD });
   } else {
-    console.warn(`Sem diff local para ${pkgName} — só atualiza descrição do PR se já existir.`);
+    exec(`git add -- ${JSON.stringify(rel)}`, { cwd: GIT_CWD });
   }
+}
 
-  const prNum = findOpenPrNumberForHead(slug);
-  if (prNum) {
-    ghPrEditBody(prNum, bodyMarkdown);
-    console.log(
-      `PR #${prNum} (${slug}): descrição atualizada${hasChanges ? '; branch enviada.' : ' (sem novo commit).'}`
-    );
-  } else if (hasChanges) {
-    ghPrCreate(base, slug, title, bodyMarkdown);
-    console.log(`PR criada: ${slug}`);
-  } else {
-    console.warn(
-      `Nenhum PR aberto com head ${slug} e nenhum commit novo — confira se o bump já está na base ou se o PR usa outro nome de branch.`
-    );
+function ghostPackage(pkgName, cwd) {
+  try {
+    if (PACKAGE_MANAGER === 'pnpm') {
+      const whyOutput = execFileSync('pnpm', ['why', pkgName, '--json'], {
+        cwd,
+        encoding: 'utf8',
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      return (
+        whyOutput.includes('"dependencies":{}') ||
+        whyOutput.trim() === '[]' ||
+        whyOutput.includes('"dependencies": []')
+      );
+    }
+    return false;
+  } catch {
+    return true;
   }
-
-  exec(`git checkout ${JSON.stringify(base)}`, { cwd: PKG_ROOT });
 }
 
 function run() {
+  PKG_ROOT = detectPackageRoot();
+  PACKAGE_MANAGER = detectPackageManager(PKG_ROOT);
+  const pmLabel = `${PACKAGE_MANAGER} (${relFromRepo(PKG_ROOT)})`;
+
   logPreflightAuth();
   assertGhAuthOrExit();
+  console.log(`PKG_ROOT=${relFromRepo(PKG_ROOT)} PM=${PACKAGE_MANAGER}`);
+
   console.log('Buscando alertas Dependabot (critical/high)...');
 
-  if (process.env.CURSOR_TOKEN && !fs.existsSync(RULES_MDC) && !fs.existsSync(RULES_MD)) {
-    console.warn('Nenhum arquivo de regras encontrado (.cursor/rules/*.mdc ou rules/*.md).');
-  }
-
   const workspaceYaml = readTextIfExists(path.join(REPO_ROOT, 'pnpm-workspace.yaml'));
-  const rootPackageJson = readTextIfExists(path.join(REPO_ROOT, 'package.json'));
-  console.log(
-    `Monorepo: workspace=${workspaceYaml.length > 0} rootPackage=${rootPackageJson.length > 0}`
-  );
 
   let alerts;
   try {
@@ -662,9 +833,6 @@ function run() {
       JSON.stringify(bySev)
     );
     console.log('Distribuição ecosystem (todos):', JSON.stringify(byEco));
-    console.log(
-      'Se existir alerta moderate/low ou outro ecosystem, não gera PR (filtro atual).'
-    );
     return;
   }
 
@@ -684,100 +852,144 @@ function run() {
     groups.get(pkgName).push(alert);
   }
 
+  const packageRows = [];
+  const failures = [];
+  let manualVerification = false;
+  const patchesByGroup = [];
+
   for (const [pkgName, pkgAlerts] of groups) {
     const sortedAlerts = [...pkgAlerts].sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
     const patches = sortedAlerts.map((a) => patchedVersionFromAlert(a)).filter(Boolean);
     const targetVersion = maxPatchedVersionStrings(patches);
     if (!targetVersion) {
       skippedNoPatch += sortedAlerts.length;
-      console.warn(`Sem versão-alvo para ${pkgName}, pulando grupo.`);
       continue;
     }
+    if (semverLineConflict(patches)) {
+      manualVerification = true;
+      failures.push(
+        `\`${pkgName}\`: patches da API em linhas semver incompatíveis (${patches.join(', ')}) — revisar overrides manualmente.`
+      );
+      continue;
+    }
+    patchesByGroup.push({
+      pkgName,
+      sortedAlerts,
+      targetVersion,
+    });
+  }
 
-    console.log(
-      `\n=== ${pkgName}: ${sortedAlerts.length} alerta(s) consolidados → ${targetVersion} (alertas ${sortedAlerts.map((a) => a.number).join(', ')}) ===`
-    );
+  if (patchesByGroup.length === 0) {
+    console.warn('Nenhum pacote com bump automático possível.');
+    if (skippedNoPatch > 0) console.log(`Alertas ignorados sem versão patch na API: ${skippedNoPatch}`);
+    return;
+  }
 
-    try {
-      syncDefaultBranch();
-      const wasDirectBefore = isDirectJsDependency(pkgName);
+  try {
+    syncDefaultBranch();
+    exec(`git checkout -B ${JSON.stringify(UNIFIED_BRANCH)}`, { cwd: GIT_CWD });
 
-      let whyOutput = '';
+    for (const g of patchesByGroup) {
+      const { pkgName, targetVersion, sortedAlerts } = g;
+      console.log(
+        `\n>>> ${pkgName} → ${targetVersion} (alertas ${sortedAlerts.map((a) => a.number).join(', ')})`
+      );
+
       try {
-        whyOutput = pnpmExec(['why', pkgName, '--json']);
-      } catch {
-        whyOutput = '';
-      }
-      const ghost =
-        whyOutput.includes('"dependencies":{}') ||
-        whyOutput.trim() === '[]' ||
-        whyOutput.includes('"dependencies": []');
+        if (ghostPackage(pkgName, PKG_ROOT)) {
+          console.log(`Ghost/no dependents aparente: ${pkgName}, rodando install para alinhar lock`);
+          pmInstall(PKG_ROOT);
+        }
 
-      if (ghost) {
-        console.log(`Ghost/no dependents: ${pkgName}, refrescando lockfile`);
-        pnpmExec(['install', '--no-frozen-lockfile']);
-        const whySummary = pnpmWhySummary(pkgName);
-        createOrUpdateSecurityPR({
+        pmAdd(pkgName, targetVersion, PKG_ROOT);
+        pmInstall(PKG_ROOT);
+
+        const ws = whySummary(pkgName, PKG_ROOT);
+        const mc = multiConsumerHeuristic(ws);
+        const wasDirect = isDirectJsDependency(pkgName);
+        const curVer = resolvedVersionHint(pkgName);
+        const breakRisk = majorBumpRisk(curVer, targetVersion);
+
+        packageRows.push({
           pkgName,
           targetVersion,
-          alerts: sortedAlerts,
-          bodyMarkdown: formatSecurityPrBody({
-            alerts: sortedAlerts,
-            pkgName,
-            targetVersion,
-            ghost: true,
-            auditResidualHighGate: false,
-            catalogHint: workspaceCatalogHint(workspaceYaml, pkgName),
-            whySummary,
-            wasDirectBefore,
-          }),
+          whySummary: ws,
+          wasDirect,
+          multiConsumer: mc.summary,
+          breakRisk,
+          sortedAlerts,
         });
-        continue;
-      }
 
-      if (workspaceYaml.length > 0 && workspaceYaml.includes(pkgName)) {
-        console.log('Pacote mencionado no workspace/catalog (revisar manualmente se necessário).');
-      }
-
-      pnpmExec(['add', '-E', `${pkgName}@${targetVersion}`, '--ignore-scripts']);
-      pnpmExec(['install', '--no-frozen-lockfile']);
-      let auditResidualHighGate = false;
-      try {
-        pnpmExec(['audit', '--audit-level', 'high']);
-      } catch {
-        auditResidualHighGate = true;
-      }
-
-      const rc = rulesContent();
-      if (process.env.CURSOR_TOKEN && rc.length > 0) {
-        console.log('Regras carregadas para contexto do operador/Cursor:', rc.length, 'chars');
-      }
-
-      const whySummary = pnpmWhySummary(pkgName);
-      createOrUpdateSecurityPR({
-        pkgName,
-        targetVersion,
-        alerts: sortedAlerts,
-        bodyMarkdown: formatSecurityPrBody({
-          alerts: sortedAlerts,
-          pkgName,
-          targetVersion,
-          ghost: false,
-          auditResidualHighGate,
-          catalogHint: workspaceCatalogHint(workspaceYaml, pkgName),
-          whySummary,
-          wasDirectBefore,
-        }),
-      });
-    } catch (err) {
-      console.error(`Falha em ${pkgName}:`, err.message);
-      try {
-        exec(`git checkout ${defaultBranch()}`, { cwd: PKG_ROOT });
-      } catch {
-        void 0;
+        if (workspaceYaml.length > 0 && workspaceYaml.includes(pkgName)) {
+          manualVerification = true;
+          failures.push(
+            `\`${pkgName}\`: possível entrada em **pnpm catalog** / workspace — conferir YAML.`
+          );
+        }
+      } catch (err) {
+        manualVerification = true;
+        failures.push(`\`${pkgName}\`@${targetVersion}: ${String(err.message || err)}`);
+        console.error(`Falha bump ${pkgName}:`, err.message || err);
       }
     }
+
+    if (pmAuditFailsHigh(PKG_ROOT)) {
+      manualVerification = true;
+      failures.push('`audit --audit-level high` ainda reporta vulnerabilidades após os bumps.');
+    }
+
+    const title = `security: Dependabot Critical/High (${filtered.length} alertas, ${packageRows.length} pacotes)`;
+
+    const bodyMarkdown = formatUnifiedPrBody({
+      packages: packageRows.map((r) => ({
+        pkgName: r.pkgName,
+        targetVersion: r.targetVersion,
+        whySummary: r.whySummary,
+        wasDirect: r.wasDirect,
+        multiConsumer: r.multiConsumer,
+        breakRisk: r.breakRisk,
+      })),
+      allAlerts: filtered,
+      manualVerification,
+      failures,
+      pmLabel,
+    });
+
+    gitAddPackageScope();
+    const status = exec('git status --porcelain', { cwd: GIT_CWD });
+    const hasChanges = Boolean(status.trim());
+
+    if (hasChanges) {
+      commitWithMessage(`${title}\n`);
+      gitPushAutomationBranch(UNIFIED_BRANCH);
+    } else {
+      console.warn('Sem alterações no working tree após tentativas de bump.');
+    }
+
+    const prNum = findOpenPrNumberForHead(UNIFIED_BRANCH);
+    if (prNum) {
+      ghPrEditBody(prNum, bodyMarkdown);
+      console.log(
+        `PR #${prNum}: descrição atualizada${hasChanges ? '; branch enviada.' : ' (sem novo commit).'}`
+      );
+    } else if (hasChanges) {
+      ghPrCreate(defaultBranch(), UNIFIED_BRANCH, title, bodyMarkdown);
+      console.log(`PR criada: ${UNIFIED_BRANCH}`);
+    } else {
+      console.warn('Nenhum commit novo e nenhum PR para atualizar.');
+    }
+
+    exec(`git checkout ${JSON.stringify(defaultBranch())}`, { cwd: GIT_CWD });
+  } catch (err) {
+    console.error('Falha fluxo unificado:', err.message || err);
+    try {
+      exec(`git checkout ${JSON.stringify(defaultBranch())}`, { cwd: GIT_CWD });
+    } catch {
+      void 0;
+    }
+    process.exit(1);
   }
+
   if (skippedNoPatch > 0) {
     console.log(`Alertas ignorados sem versão patch na API: ${skippedNoPatch}`);
   }
