@@ -43,7 +43,7 @@ jobs:
         working-directory: javascript
         run: pnpm install --no-frozen-lockfile
 
-      - name: Dependabot API (diagnóstico)
+      - name: Dependabot REST (diagnóstico)
         env:
           GH_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
           GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
@@ -51,33 +51,33 @@ jobs:
           set -euo pipefail
           if [ -n "${GH_DEPENDABOT_ALERTS_TOKEN:-}" ]; then
             export GH_TOKEN="${GH_DEPENDABOT_ALERTS_TOKEN}"
-            echo "Usando secret GH_DEPENDABOT_ALERTS_TOKEN para a API de alertas."
+            echo "Token: secret GH_DEPENDABOT_ALERTS_TOKEN."
           fi
           gh auth status
           REPO="${{ github.repository }}"
-          echo "Repositório: ${REPO}"
-          echo "GET /repos/${REPO}/dependabot/alerts (headers Accept + X-GitHub-Api-Version) ..."
+          REST_PATH="/repos/${REPO}/dependabot/alerts"
+          REST_LIST="${REST_PATH}?state=open&per_page=100"
+          echo "Padronização: UI (navegador) ≠ REST (gh api)."
+          echo "  UI:  https://github.com/${REPO}/security/dependabot"
+          echo "  REST GET (api.github.com): ${REST_PATH}"
+          echo "Chamada: GET ${REST_LIST}"
           if ! gh api \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "/repos/${REPO}/dependabot/alerts" \
-            -f state=open \
+            "${REST_LIST}" \
             --jq 'length'; then
-            echo "::error::Dependabot Alerts API falhou (404 costuma sumir com headers corretos; 403 = permissão no token ou política da org)."
-            echo "Opcional: crie um PAT classic com scope security_events e salve como secret GH_DEPENDABOT_ALERTS_TOKEN."
+            echo "::error::REST ${REST_PATH} falhou. /security/dependabot/alerts na web não existe (use a URL de UI acima). 403/404: permissão, Dependabot alerts desligado ou política da org. Secret opcional: GH_DEPENDABOT_ALERTS_TOKEN."
             gh api \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              "/repos/${REPO}/dependabot/alerts" \
-              -f state=open 2>&1 || true
+              "${REST_LIST}" 2>&1 || true
             exit 1
           fi
           echo "Primeiros alertas:"
           gh api \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "/repos/${REPO}/dependabot/alerts" \
-            -f state=open \
+            "${REST_LIST}" \
             --jq '.[:15] | map({n:.number,sev:.security_advisory.severity,eco:.dependency.package.ecosystem,pkg:.dependency.package.name,pth:.dependency.manifest_path})'
 
       - name: 🤖 Execute Cursor Fix Logic
