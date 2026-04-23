@@ -1,120 +1,263 @@
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { execSync } = require('child_process');
 
-const SEVERITIES = ['critical', 'high'];
+const SEVERITY_ORDER = { critical: 0, high: 1 };
 const REPO_ROOT = path.join(__dirname, '..', '..');
-const RULES_PATH = path.join(
+const PKG_ROOT = path.join(REPO_ROOT, 'javascript');
+const RULES_MDC = path.join(
   REPO_ROOT,
   '.cursor',
   'rules',
   'verify-issues-dependabot.mdc'
 );
+const RULES_MD = path.join(REPO_ROOT, 'rules', 'verify-issues-dependabot.md');
+
+function exec(cmd, options = {}) {
+  return execSync(cmd, {
+    encoding: 'utf8',
+    cwd: options.cwd ?? PKG_ROOT,
+    env: { ...process.env, ...options.env },
+    stdio: ['pipe', 'pipe', 'pipe'],
+    ...options,
+  });
+}
 
 function readTextIfExists(filePath) {
   return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
 }
 
-async function run() {
-  console.log("🔍 Buscando alertas de vulnerabilidade (Critical/High)...");
+function rulesContent() {
+  if (fs.existsSync(RULES_MDC)) return readTextIfExists(RULES_MDC);
+  return readTextIfExists(RULES_MD);
+}
 
+function fetchDependabotAlerts() {
+  const all = [];
+  let page = 1;
+  for (;;) {
+    const cmd = `gh api "repos/:owner/:repo/dependabot/alerts?state=open&per_page=100&page=${page}"`;
+    let chunk;
+    try {
+      chunk = exec(cmd);
+    } catch (e) {
+      console.error(e.stderr || e.message);
+      throw e;
+    }
+    const arr = JSON.parse(chunk);
+    if (!Array.isArray(arr) || arr.length === 0) break;
+    all.push(...arr);
+    if (arr.length < 100) break;
+    page += 1;
+  }
+  return all;
+}
+
+function severityRank(sev) {
+  return SEVERITY_ORDER[sev] ?? 99;
+}
+
+function patchedVersionFromAlert(alert) {
+  const pkg = alert.dependency?.package?.name;
+  const vulns = alert.security_advisory?.vulnerabilities;
+  if (Array.isArray(vulns) && pkg) {
+    const v = vulns.find(
+      (x) =>
+        x?.package?.name === pkg ||
+        x?.package?.ecosystem === alert.dependency?.package?.ecosystem
+    );
+    const id = v?.first_patched_version?.identifier;
+    if (id) return id.trim();
+  }
+  const patched = alert.security_advisory?.patched_versions;
+  if (typeof patched === 'string' && patched.trim()) {
+    const parts = patched.split(',').map((p) => p.trim());
+    const last = parts[parts.length - 1];
+    const numeric = last.replace(/^[^0-9]*/, '').match(/[\d.]+[-\w.]*/);
+    if (numeric) return numeric[0];
+  }
+  return '';
+}
+
+function branchSlug(pkgName, alertNumber) {
+  const s = pkgName.replace(/^@/, '').replace(/\//g, '-');
+  return `security/fix-${s}-${alertNumber}`;
+}
+
+function commitWithMessage(message) {
+  const f = path.join(os.tmpdir(), `gitmsg-${process.pid}.txt`);
+  fs.writeFileSync(f, message, 'utf8');
   try {
-    if (process.env.CURSOR_TOKEN && !fs.existsSync(RULES_PATH)) {
-      console.warn(`Rules file missing: ${RULES_PATH}`);
-    }
-
-    const workspaceYaml = readTextIfExists(
-      path.join(REPO_ROOT, 'pnpm-workspace.yaml')
-    );
-    const rootPackageJson = readTextIfExists(
-      path.join(REPO_ROOT, 'package.json')
-    );
-    console.log(
-      `Monorepo hints: workspaceFile=${workspaceYaml.length > 0} rootPackageJson=${rootPackageJson.length > 0}`
-    );
-    const alertsJson = execSync(
-      `gh api repos/:owner/:repo/dependabot/alerts?state=open --per-page 100`
-    ).toString();
-    
-    const alerts = JSON.parse(alertsJson).filter(a => 
-      SEVERITIES.includes(a.security_advisory.severity)
-    );
-
-    if (alerts.length === 0) {
-      console.log("✅ Nenhuma vulnerabilidade crítica ou alta encontrada.");
-      return;
-    }
-
-    console.log(`🚀 Encontradas ${alerts.length} vulnerabilidades. Iniciando triagem...`);
-
-    for (const alert of alerts) {
-      const pkgName = alert.dependency.package.name;
-      const safeVersion = alert.security_advisory.patched_versions.split(',').pop().trim().replace(/[><=]/g, '');
-      const alertId = alert.number;
-
-      console.log(`\n--- Analisando: ${pkgName} (#${alertId}) ---`);
-
-      // STEP 0: Ghost Check (Obrigatório conforme o guia)
-      console.log(`👻 Step 0: pnpm why ${pkgName}`);
-      const whyOutput = execSync(`pnpm why ${pkgName} --json || true`).toString();
-      
-      // Se não houver dependentes reais, é um "fantasma" no lockfile
-      if (whyOutput.includes('"dependencies":{}') || whyOutput === '[]') {
-        console.log(`✨ ${pkgName} é um fantasma. Limpando lockfile...`);
-        execSync('pnpm install');
-        createPR(pkgName, 'Ghost Cleanup', alertId, 'Remoção de dependência fantasma via Step 0.');
-        continue;
-      }
-
-      // DECISÃO TÉCNICA E APLICAÇÃO
-      // Conforme o guia: Sempre versão fixa (-E)
-      try {
-        console.log(`🛠️ Aplicando Bump: pnpm add -E ${pkgName}@${safeVersion}`);
-        
-        // Verifica se é Workspace (Catalog) ou Raiz (conforme seção 'Escopo' do seu guia)
-        const isWorkspace =
-          workspaceYaml.length > 0 && workspaceYaml.includes(pkgName);
-
-        if (isWorkspace) {
-          console.log("📍 Detectado no Workspace/Catalog.");
-        }
-
-        // Executa a instalação fixa
-        execSync(`pnpm add -E ${pkgName}@${safeVersion} --ignore-scripts`);
-
-        // VALIDAR (Step 4 do guia)
-        console.log("🧪 Validando com pnpm audit...");
-        execSync('pnpm install && pnpm audit --level high');
-
-        // Se chegou aqui sem erro, abre a PR
-        createPR(pkgName, safeVersion, alertId);
-        
-      } catch (error) {
-        console.error(`⚠️ Falha ao corrigir ${pkgName} automaticamente. Verifique se é uma sub-dependência que exige Override.`);
-        // Aqui o Cursor/LLM entraria para decidir por um Override no package.json
-      }
-    }
-  } catch (err) {
-    console.error("❌ Erro no processo:", err.message);
-    process.exit(1);
+    exec(`git commit -F ${JSON.stringify(f)}`, { cwd: PKG_ROOT });
+  } finally {
+    fs.unlinkSync(f);
   }
 }
 
-function createPR(pkg, ver, id, customMsg = '') {
-  const branch = `security/fix-${pkg}-${id}`;
-  const title = `🛡️ Security: Fix ${pkg} to ${ver}`;
-  const body = customMsg || `Corrigindo vulnerabilidade detectada pelo Dependabot (#${id}).\n\n**Regras aplicadas:**\n- Versão Fixa (-E)\n- Step 0 (Ghost Check) concluído\n- Audit validado.`;
-
+function defaultBranch() {
+  const b = process.env.DEFAULT_BRANCH;
+  if (b) return b;
   try {
-    execSync(`git checkout -b ${branch}`);
-    execSync(`git add . && git commit -m "${title}"`);
-    execSync(`git push origin ${branch} --force`);
-    execSync(`gh pr create --title "${title}" --body "${body}" --base main --head ${branch}`);
-    console.log(`✅ PR aberta para ${pkg}`);
-    execSync(`git checkout main`);
+    return exec('gh repo view --json defaultBranchRef -q .defaultBranchRef.name', {
+      cwd: PKG_ROOT,
+    }).trim();
+  } catch {
+    return 'main';
+  }
+}
+
+function syncDefaultBranch() {
+  const base = defaultBranch();
+  exec(`git fetch origin ${JSON.stringify(base)}`, { cwd: PKG_ROOT });
+  exec(`git checkout ${JSON.stringify(base)}`, { cwd: PKG_ROOT });
+  exec(`git reset --hard origin/${base}`, { cwd: PKG_ROOT });
+}
+
+function createPR(pkg, ver, alertId, customBody, auditNote) {
+  const base = defaultBranch();
+  const slug = branchSlug(pkg, alertId);
+  const title = `security: bump ${pkg} to ${ver} (Dependabot #${alertId})`;
+  const baseBody =
+    customBody ||
+    [
+      `Correção automática para o alerta Dependabot **#${alertId}**.`,
+      '',
+      `- Pacote: \`${pkg}\``,
+      `- Versão alvo (patch mínimo): \`${ver}\``,
+      '',
+      'Checklist:',
+      '- [ ] CI verde',
+      '- [ ] Revisar changelog se major/minor',
+    ].join('\n');
+  const body = auditNote ? `${baseBody}\n\n${auditNote}` : baseBody;
+
+  exec(`git checkout -b ${JSON.stringify(slug)}`, { cwd: PKG_ROOT });
+  exec('git add .', { cwd: PKG_ROOT });
+  const status = exec('git status --porcelain', { cwd: PKG_ROOT });
+  if (!status.trim()) {
+    console.warn(`Sem alterações para ${pkg} (#${alertId}), PR não criada.`);
+    exec(`git checkout ${JSON.stringify(base)}`, { cwd: PKG_ROOT });
+    exec(`git branch -D ${JSON.stringify(slug)}`, { cwd: PKG_ROOT });
+    return;
+  }
+  commitWithMessage(`${title}\n`);
+  exec(`git push -u origin HEAD`, { cwd: PKG_ROOT });
+  exec(
+    [
+      'gh pr create',
+      `--base ${JSON.stringify(base)}`,
+      `--head ${JSON.stringify(slug)}`,
+      `--title ${JSON.stringify(title)}`,
+      `--body ${JSON.stringify(body)}`,
+    ].join(' '),
+    { cwd: PKG_ROOT }
+  );
+  console.log(`PR criada: ${slug}`);
+  exec(`git checkout ${base}`, { cwd: PKG_ROOT });
+}
+
+function run() {
+  console.log('Buscando alertas Dependabot (critical/high)...');
+
+  if (process.env.CURSOR_TOKEN && !fs.existsSync(RULES_MDC) && !fs.existsSync(RULES_MD)) {
+    console.warn('Nenhum arquivo de regras encontrado (.cursor/rules/*.mdc ou rules/*.md).');
+  }
+
+  const workspaceYaml = readTextIfExists(path.join(REPO_ROOT, 'pnpm-workspace.yaml'));
+  const rootPackageJson = readTextIfExists(path.join(REPO_ROOT, 'package.json'));
+  console.log(
+    `Monorepo: workspace=${workspaceYaml.length > 0} rootPackage=${rootPackageJson.length > 0}`
+  );
+
+  let alerts;
+  try {
+    alerts = fetchDependabotAlerts();
   } catch (e) {
-    console.log("⚠️ PR já existe ou erro ao subir branch.");
-    execSync(`git checkout main`);
+    console.error('Falha ao listar alertas:', e.message);
+    process.exit(1);
+    return;
+  }
+
+  const filtered = alerts.filter((a) => {
+    const sev = a.security_advisory?.severity;
+    const eco = a.dependency?.package?.ecosystem;
+    return (sev === 'critical' || sev === 'high') && eco === 'npm';
+  });
+
+  filtered.sort((a, b) => {
+    const da = severityRank(a.security_advisory.severity);
+    const db = severityRank(b.security_advisory.severity);
+    if (da !== db) return da - db;
+    return (a.number ?? 0) - (b.number ?? 0);
+  });
+
+  if (filtered.length === 0) {
+    console.log('Nenhum alerta critical/high (npm) aberto.');
+    return;
+  }
+
+  console.log(`Total de alertas na fila: ${filtered.length}`);
+
+  for (const alert of filtered) {
+    const pkgName = alert.dependency.package.name;
+    const alertId = alert.number;
+    const safeVersion = patchedVersionFromAlert(alert);
+
+    if (!safeVersion) {
+      console.warn(`Sem versão patchada explícita para ${pkgName} (#${alertId}), pulando.`);
+      continue;
+    }
+
+    console.log(`\n--- ${pkgName} (#${alertId}) [${alert.security_advisory.severity}] -> ${safeVersion} ---`);
+
+    try {
+      const whyOutput = exec(`pnpm why ${JSON.stringify(pkgName)} --json || true`);
+      const ghost =
+        whyOutput.includes('"dependencies":{}') ||
+        whyOutput.trim() === '[]' ||
+        whyOutput.includes('"dependencies": []');
+
+      if (ghost) {
+        console.log(`Ghost/no dependents: ${pkgName}, refrescando lockfile`);
+        exec('pnpm install --no-frozen-lockfile');
+        createPR(
+          pkgName,
+          safeVersion,
+          alertId,
+          `Limpeza pós-\`pnpm why\` (entrada órfã no grafo) para o alerta #${alertId}.\n\nPacote: \`${pkgName}\`\n`
+        );
+        continue;
+      }
+
+      if (workspaceYaml.length > 0 && workspaceYaml.includes(pkgName)) {
+        console.log('Pacote mencionado no workspace/catalog (revisar manualmente se necessário).');
+      }
+
+      exec(`pnpm add -E ${JSON.stringify(`${pkgName}@${safeVersion}`)} --ignore-scripts`);
+      exec('pnpm install --no-frozen-lockfile');
+      let auditNote = '';
+      try {
+        exec('pnpm audit --audit-level high');
+      } catch {
+        auditNote =
+          '**Aviso:** `pnpm audit --audit-level high` ainda reporta vulnerabilidades (possíveis transitivas ou outros alertas).';
+      }
+
+      const rc = rulesContent();
+      if (process.env.CURSOR_TOKEN && rc.length > 0) {
+        console.log('Regras carregadas para contexto do operador/Cursor:', rc.length, 'chars');
+      }
+
+      createPR(pkgName, safeVersion, alertId, undefined, auditNote);
+    } catch (err) {
+      console.error(`Falha em ${pkgName} (#${alertId}):`, err.message);
+      try {
+        exec(`git checkout ${defaultBranch()}`, { cwd: PKG_ROOT });
+      } catch {
+        void 0;
+      }
+    }
   }
 }
 
