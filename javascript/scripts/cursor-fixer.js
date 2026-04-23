@@ -62,11 +62,7 @@ function patchedVersionFromAlert(alert) {
   const pkg = alert.dependency?.package?.name;
   const vulns = alert.security_advisory?.vulnerabilities;
   if (Array.isArray(vulns) && pkg) {
-    const v = vulns.find(
-      (x) =>
-        x?.package?.name === pkg ||
-        x?.package?.ecosystem === alert.dependency?.package?.ecosystem
-    );
+    const v = vulns.find((x) => x?.package?.name === pkg);
     const id = v?.first_patched_version?.identifier;
     if (id) return id.trim();
   }
@@ -109,9 +105,9 @@ function defaultBranch() {
 
 function syncDefaultBranch() {
   const base = defaultBranch();
-  exec(`git fetch origin ${JSON.stringify(base)}`, { cwd: PKG_ROOT });
+  exec('git fetch origin', { cwd: PKG_ROOT });
   exec(`git checkout ${JSON.stringify(base)}`, { cwd: PKG_ROOT });
-  exec(`git reset --hard origin/${base}`, { cwd: PKG_ROOT });
+  exec(`git reset --hard ${JSON.stringify(`origin/${base}`)}`, { cwd: PKG_ROOT });
 }
 
 function createPR(pkg, ver, alertId, customBody, auditNote) {
@@ -154,7 +150,7 @@ function createPR(pkg, ver, alertId, customBody, auditNote) {
     { cwd: PKG_ROOT }
   );
   console.log(`PR criada: ${slug}`);
-  exec(`git checkout ${base}`, { cwd: PKG_ROOT });
+  exec(`git checkout ${JSON.stringify(base)}`, { cwd: PKG_ROOT });
 }
 
 function run() {
@@ -212,6 +208,8 @@ function run() {
     console.log(`\n--- ${pkgName} (#${alertId}) [${alert.security_advisory.severity}] -> ${safeVersion} ---`);
 
     try {
+      syncDefaultBranch();
+
       const whyOutput = exec(`pnpm why ${JSON.stringify(pkgName)} --json || true`);
       const ghost =
         whyOutput.includes('"dependencies":{}') ||
