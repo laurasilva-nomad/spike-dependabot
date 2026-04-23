@@ -51,6 +51,23 @@ function ghApiVersion() {
   return process.env.GITHUB_API_VERSION || '2022-11-28';
 }
 
+function dependabotAlertsRestPath(slug, page) {
+  const q = new URLSearchParams({
+    state: 'open',
+    per_page: '100',
+    page: String(page),
+  });
+  return `/repos/${slug}/dependabot/alerts?${q.toString()}`;
+}
+
+function dependabotAlertsUiUrl(slug) {
+  return `https://github.com/${slug}/security/dependabot`;
+}
+
+function dependabotAlertsRestApiUrl(slug) {
+  return `https://api.github.com/repos/${slug}/dependabot/alerts`;
+}
+
 function tokenOptsForAlerts() {
   const alertsToken = process.env.GH_DEPENDABOT_ALERTS_TOKEN;
   return alertsToken ? { env: { ...process.env, GH_TOKEN: alertsToken } } : {};
@@ -70,7 +87,7 @@ function fetchDependabotAlertsRest(slug, tokenOpts) {
   const all = [];
   let page = 1;
   for (;;) {
-    const pathAndQuery = `/repos/${slug}/dependabot/alerts?state=open&per_page=100&page=${page}`;
+    const pathAndQuery = dependabotAlertsRestPath(slug, page);
     const cmd = [ghRestHeadersCmdPrefix(), JSON.stringify(pathAndQuery)].join(' ');
     const chunk = exec(cmd, tokenOpts);
     const arr = JSON.parse(chunk);
@@ -213,9 +230,11 @@ function fetchDependabotAlerts() {
       throw new Error(
         [
           'Não foi possível listar alertas via REST nem GraphQL.',
+          `UI GitHub (sem /alerts no path): ${dependabotAlertsUiUrl(slug)}`,
+          `REST gh api: GET ${dependabotAlertsRestApiUrl(slug)}?state=open`,
           'Confira: job.permissions.security-events: read;',
           'na org: Actions → General → Workflow permissions não pode remover security-events do GITHUB_TOKEN;',
-          'ou secret GH_DEPENDABOT_ALERTS_TOKEN (PAT classic, scope security_events).',
+          'ou secret GH_DEPENDABOT_ALERTS_TOKEN (PAT classic scope security_events ou fine-grained Dependabot alerts read).',
           'Doc: https://docs.github.com/en/rest/dependabot/alerts',
         ].join(' ')
       );
