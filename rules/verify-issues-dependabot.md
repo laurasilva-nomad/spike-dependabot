@@ -2,7 +2,21 @@
 
 **Comandos de audit são sempre do usuário:** o executor **não** roda `pnpm audit` nem `pnpm i && pnpm audit`. O usuário roda `pnpm audit` na raiz do monorepo e cola a saída (ou o alerta do Dependabot) na conversa para a análise. Qualquer validação com install + audit também fica a cargo do usuário.
 
-Seguir [rules/dependencies.md](../rules/dependencies.md) (versão fixa, `pnpm add -E`). Escopo: só **crítica** e **alta**; moderate/low apenas listar, não corrigir.
+Seguir [javascript/dependencies.md](../javascript/dependencies.md) (versão fixa, `pnpm add -E`). Escopo: só **crítica** e **alta**; moderate/low apenas listar, não corrigir.
+
+## Issues / alertas abertos e versão única (“universal”)
+
+Antes de propor correção por **um** número de alerta só:
+
+1. **Agrupar por pacote npm** todos os alertas Dependabot **abertos** que cite o mesmo pacote (GitHub → **Security → Dependabot** ou lista/API). Ignorar duplicar trabalho por `#alert` se o problema é o mesmo artefato.
+2. Para esse pacote, reunir todas as versões **patched / corrigidas** indicadas pela advisory (REST/API ou UI — colunas “Patched versions” / `first_patched_version`).
+3. Sugerir **uma versão-alvo única**: a **maior** segundo **semver** entre essas correções **na mesma linha compatível** — é o mesmo critério do automatismo neste repo (`cursor-fixer.js`: um fluxo por pacote, branch `security/fix-<pacote>` sem id de alerta no nome).
+4. Se já existir **PR** ou **issue** aberta para esse pacote (nome `security/fix-*` ou título repetindo o pacote), preferir **subir para a versão universal** ou **editar descrição** em vez de propor outro bump isolado por alerta.
+5. **Exceção:** duas linhas **incompatíveis** para o mesmo nome publicado (ex.: major distintos que não fecham com um único semver, ou dois ecossistemas de resolução) → não forçar um só número; tratar como na seção 3 (**override** cirúrgico ou dois planos).
+
+**Nestes spikes** o código alvo é `javascript/package.json` + `javascript/pnpm-lock.yaml` quando existir estrutura `javascript/`.
+
+---
 
 **Ordem de decisão:**
 

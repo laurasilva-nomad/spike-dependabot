@@ -7,6 +7,7 @@ alwaysApply: true
 
 Este repositório é um **spike de automação**: workflow no GitHub Actions (`cursor-security-fix.yml`) executa `javascript/scripts/cursor-fixer.js`, que usa **`gh`/REST** para ler **Dependabot alerts**, orquestra correções e usa regras em `.cursor/rules` ou `rules/` quando aplicável.
 
+- **Correções manuais no Cursor:** seguir `rules/verify-issues-dependabot.md` — agrupar alertas **abertos** por **pacote**, propor **uma** versão “universal” (maior semver entre os patches da API) alinhada ao script; evitar um plano por número de alerta.
 - **Pacotes JS**: diretório `javascript/` com `pnpm`; lockfile referenciado no workflow.
 - **Versões**: ao mexer em `package.json`, use **versões exatas** (sem `^`, `~`, ranges). Instalação com `--save-exact` / equivalente no pnpm.
 - **Secrets esperados**: `CURSOR_TOKEN` onde o fluxo precisar; opcionalmente `GH_DEPENDABOT_ALERTS_TOKEN` (PAT) quando `GITHUB_TOKEN`/`github.token` não bastar para a API de alertas (org/política).

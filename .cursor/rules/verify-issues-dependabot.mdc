@@ -1,0 +1,16 @@
+---
+description: Dependabot manual — grupo por pacote, versão universal e issues abertas
+globs: javascript/**/*.{json,yaml,yml},pnpm-lock.yaml,rules/**/*.md
+alwaysApply: false
+---
+
+# Alinhamento com `cursor-fixer.js`
+
+Fonte integral: **`rules/verify-issues-dependabot.md`**.
+
+Ao sugerir bump ou override manualmente:
+
+- Listar alertas Dependabot **abertos** para o **mesmo pacote** antes de propor correção por um único `#alert`.
+- Versão-alvo única (**“universal”**): **maior** semver entre todas as correções (`first_patched_version` / patched) que a API/UI indicar para esse pacote, quando uma linha de releases cobre todos.
+- Conferir **PRs/issues** já abertos (`security/fix-<pacote>` ou mesmo nome repetido): preferir atualizar ou escalar para a versão universal em vez de duplicar por número de alerta.
+- Se duas linhas de versão forem **incompatíveis** com um só número, não forçar universal → **pnpm.overrides** cirúrgicos ou planos separados (ver doc).
