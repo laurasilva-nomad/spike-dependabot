@@ -13,6 +13,9 @@ jobs:
       pull-requests: write
       repository-projects: read
       security-events: read
+    env:
+      GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
+      GH_REPO_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout
@@ -44,20 +47,14 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Dependabot REST (diagnóstico)
-        env:
-          GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -n "${GH_DEPENDABOT_ALERTS_TOKEN:-}" ]; then
-            export GH_TOKEN="${GH_DEPENDABOT_ALERTS_TOKEN}"
-            echo "gh: token = secret GH_DEPENDABOT_ALERTS_TOKEN"
-          elif [ -n "${GITHUB_TOKEN:-}" ]; then
-            export GH_TOKEN="${GITHUB_TOKEN}"
-            echo "gh: token = GITHUB_TOKEN do workflow (fallback; exige permissions.security-events: read)"
-          else
-            echo "::error::Nenhum token: configure o secret GH_DEPENDABOT_ALERTS_TOKEN ou confira que o job recebe GITHUB_TOKEN."
+          export GH_TOKEN="${GH_DEPENDABOT_ALERTS_TOKEN:-${GH_REPO_TOKEN}}"
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_TOKEN vazio (job precisa de GH_REPO_TOKEN ou PAT)."
             exit 1
           fi
+          if [ -n "${GH_DEPENDABOT_ALERTS_TOKEN:-}" ]; then echo "gh: PAT"; else echo "gh: GH_REPO_TOKEN"; fi
           gh auth status
           REPO="${{ github.repository }}"
           REST_PATH="/repos/${REPO}/dependabot/alerts"
@@ -89,8 +86,7 @@ jobs:
         working-directory: javascript
         env:
           CURSOR_TOKEN: ${{ secrets.CURSOR_TOKEN }}
-          GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_API_VERSION: ${{ vars.GITHUB_API_VERSION }}
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/cursor-fixer.js

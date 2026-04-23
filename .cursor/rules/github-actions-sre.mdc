@@ -1,0 +1,30 @@
+---
+description: Padrões SRE e segurança para workflows GitHub Actions neste repo
+globs: .github/**/*.{yml,yaml}
+alwaysApply: false
+---
+
+# GitHub Actions — SRE e workflows
+
+## Permissões
+
+- Declare `permissions` no job com o **mínimo necessário**. Para **Dependabot Alerts REST**, o job precisa de `security-events: read` (além de `contents`/`pull-requests` se houver push/PR).
+- Em orgs com políticas rígidas, confira **Actions → General → Workflow permissions**; não assuma que `GITHUB_TOKEN` resolve tudo.
+
+## Tokens e secrets
+
+- **Secrets** (`Settings → Secrets and variables → Actions`) só viram variável de ambiente quando referenciados no YAML: `GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}`. O processo `node scripts/cursor-fixer.js` recebe isso em **`process.env`** como qualquer job na máquina — não é um objeto separado “sem env”.
+- **Não** sobrescrever `GITHUB_TOKEN` no `env` com nomes que conflitem com o runner; neste projeto usamos **`GH_REPO_TOKEN: ${{ github.token }}`** como fallback explícito para `gh`.
+- Secret opcional **`GH_DEPENDABOT_ALERTS_TOKEN`**: PAT com escopo equivalente a ler alertas (classic `security_events` ou fine-grained **Dependabot alerts** no repo). Forks **não** herdam secrets do upstream.
+- Nunca ecoar ou logar valores de token; logs do Actions mascaram secrets, mas não confie em prints manuais.
+
+## API vs UI
+
+- **REST** (`gh api`, `api.github.com`): `GET /repos/{owner}/{repo}/dependabot/alerts`.
+- **UI**: `https://github.com/{owner}/{repo}/security/dependabot` — **não** existe rota web `.../security/dependabot/alerts` (404 no browser é esperado).
+
+## Operação
+
+- **Cron** do GitHub usa **UTC**; documente intenção de horário no nome do step ou comentário mínimo no `cron`.
+- Prefira **falhar cedo** com step de diagnóstico antes de lógica pesada quando integrar APIs novas.
+- Fixe **versões major** de `uses:` (`actions/checkout@v4`) de forma consistente com o restante do arquivo.

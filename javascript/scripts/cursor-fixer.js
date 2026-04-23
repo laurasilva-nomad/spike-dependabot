@@ -1,7 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 const SEVERITY_ORDER = { critical: 0, high: 1 };
 const REPO_ROOT = path.join(__dirname, '..', '..');
@@ -14,14 +14,79 @@ const RULES_MDC = path.join(
 );
 const RULES_MD = path.join(REPO_ROOT, 'rules', 'verify-issues-dependabot.md');
 
+function tokenFromEnv(env) {
+  return (
+    env.GH_DEPENDABOT_ALERTS_TOKEN ||
+    env.GH_REPO_TOKEN ||
+    env.GH_TOKEN ||
+    env.GITHUB_TOKEN ||
+    ''
+  );
+}
+
+function resolveGhToken() {
+  return tokenFromEnv(process.env);
+}
+
+function envWithGhCliAuth(env) {
+  const out = { ...env };
+  const token = tokenFromEnv(out);
+  if (token) out.GH_TOKEN = token;
+  return out;
+}
+
+function logPreflightAuth() {
+  console.log(
+    JSON.stringify({
+      secrets_GH_DEPENDABOT_ALERTS_TOKEN_set: Boolean(process.env.GH_DEPENDABOT_ALERTS_TOKEN),
+      GH_REPO_TOKEN_set: Boolean(process.env.GH_REPO_TOKEN),
+      GH_TOKEN_set: Boolean(process.env.GH_TOKEN),
+      GITHUB_TOKEN_set: Boolean(process.env.GITHUB_TOKEN),
+    })
+  );
+}
+
+function assertGhAuthOrExit() {
+  if (!tokenFromEnv(process.env)) {
+    console.error(
+      'Sem token para gh: no Actions use job env GH_REPO_TOKEN e/ou step env GH_TOKEN (github.token); opcional PAT GH_DEPENDABOT_ALERTS_TOKEN.'
+    );
+    process.exit(1);
+  }
+}
+
 function exec(cmd, options = {}) {
+  const mergedEnv = envWithGhCliAuth({ ...process.env, ...(options.env || {}) });
   return execSync(cmd, {
     encoding: 'utf8',
     cwd: options.cwd ?? PKG_ROOT,
-    env: { ...process.env, ...options.env },
+    env: mergedEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
-    ...options,
+    shell: true,
   });
+}
+
+function pnpmExec(args, cwd = PKG_ROOT) {
+  return execFileSync('pnpm', args, {
+    cwd,
+    encoding: 'utf8',
+    env: process.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
+function ghPrCreate(baseBranch, headBranch, title, body) {
+  const mergedEnv = envWithGhCliAuth(process.env);
+  execFileSync(
+    'gh',
+    ['pr', 'create', '--base', baseBranch, '--head', headBranch, '--title', title, '--body', body],
+    {
+      cwd: PKG_ROOT,
+      env: mergedEnv,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }
+  );
 }
 
 function readTextIfExists(filePath) {
@@ -68,11 +133,6 @@ function dependabotAlertsRestApiUrl(slug) {
   return `https://api.github.com/repos/${slug}/dependabot/alerts`;
 }
 
-function tokenOptsForAlerts() {
-  const alertsToken = process.env.GH_DEPENDABOT_ALERTS_TOKEN;
-  return alertsToken ? { env: { ...process.env, GH_TOKEN: alertsToken } } : {};
-}
-
 function ghRestHeadersCmdPrefix() {
   return [
     'gh api',
@@ -83,13 +143,13 @@ function ghRestHeadersCmdPrefix() {
   ].join(' ');
 }
 
-function fetchDependabotAlertsRest(slug, tokenOpts) {
+function fetchDependabotAlertsRest(slug) {
   const all = [];
   let page = 1;
   for (;;) {
     const pathAndQuery = dependabotAlertsRestPath(slug, page);
     const cmd = [ghRestHeadersCmdPrefix(), JSON.stringify(pathAndQuery)].join(' ');
-    const chunk = exec(cmd, tokenOpts);
+    const chunk = exec(cmd);
     const arr = JSON.parse(chunk);
     if (!Array.isArray(arr) || arr.length === 0) break;
     all.push(...arr);
@@ -152,17 +212,17 @@ function mapGraphqlNodeToRestAlert(node) {
   };
 }
 
-function graphqlRequest(bodyObj, tokenOpts) {
+function graphqlRequest(bodyObj) {
   const f = path.join(os.tmpdir(), `ghgql-${process.pid}-${Date.now()}.json`);
   fs.writeFileSync(f, JSON.stringify(bodyObj));
   try {
-    return exec(`gh api graphql --input ${JSON.stringify(f)}`, tokenOpts);
+    return exec(`gh api graphql --input ${JSON.stringify(f)}`);
   } finally {
     fs.unlinkSync(f);
   }
 }
 
-function fetchDependabotAlertsGraphql(slug, tokenOpts) {
+function fetchDependabotAlertsGraphql(slug) {
   const slash = slug.indexOf('/');
   const owner = slash === -1 ? '' : slug.slice(0, slash);
   const name = slash === -1 ? '' : slug.slice(slash + 1);
@@ -186,13 +246,10 @@ query($owner:String!,$name:String!,$after:String){
   let after = null;
   const mapped = [];
   for (;;) {
-    const raw = graphqlRequest(
-      {
-        query,
-        variables: { owner, name, after },
-      },
-      tokenOpts
-    );
+    const raw = graphqlRequest({
+      query,
+      variables: { owner, name, after },
+    });
     const parsed = JSON.parse(raw);
     if (parsed.errors?.length) {
       throw new Error(parsed.errors.map((e) => e.message).join('; '));
@@ -212,9 +269,8 @@ query($owner:String!,$name:String!,$after:String){
 
 function fetchDependabotAlerts() {
   const slug = ghRepoSlug();
-  const tokenOpts = tokenOptsForAlerts();
   try {
-    const rest = fetchDependabotAlertsRest(slug, tokenOpts);
+    const rest = fetchDependabotAlertsRest(slug);
     console.log(`REST: ${rest.length} alerta(s) aberto(s).`);
     return rest;
   } catch (e) {
@@ -222,7 +278,7 @@ function fetchDependabotAlerts() {
     console.warn('REST Dependabot alerts falhou:', msg.trim());
     console.warn('Tentando GraphQL (repository.vulnerabilityAlerts)…');
     try {
-      const gql = fetchDependabotAlertsGraphql(slug, tokenOpts);
+      const gql = fetchDependabotAlertsGraphql(slug);
       console.log(`GraphQL: ${gql.length} alerta(s) aberto(s).`);
       return gql;
     } catch (e2) {
@@ -234,7 +290,7 @@ function fetchDependabotAlerts() {
           `REST gh api: GET ${dependabotAlertsRestApiUrl(slug)}?state=open`,
           'Confira: job.permissions.security-events: read;',
           'na org: Actions → General → Workflow permissions não pode remover security-events do GITHUB_TOKEN;',
-          'ou secret GH_DEPENDABOT_ALERTS_TOKEN (PAT classic scope security_events ou fine-grained Dependabot alerts read).',
+          'ou GH_REPO_TOKEN / GH_DEPENDABOT_ALERTS_TOKEN no ambiente do job.',
           'Doc: https://docs.github.com/en/rest/dependabot/alerts',
         ].join(' ')
       );
@@ -333,21 +389,14 @@ function createPR(pkg, ver, alertId, customBody, auditNote) {
   }
   commitWithMessage(`${title}\n`);
   exec(`git push -u origin HEAD`, { cwd: PKG_ROOT });
-  exec(
-    [
-      'gh pr create',
-      `--base ${JSON.stringify(base)}`,
-      `--head ${JSON.stringify(slug)}`,
-      `--title ${JSON.stringify(title)}`,
-      `--body ${JSON.stringify(body)}`,
-    ].join(' '),
-    { cwd: PKG_ROOT }
-  );
+  ghPrCreate(base, slug, title, body);
   console.log(`PR criada: ${slug}`);
   exec(`git checkout ${JSON.stringify(base)}`, { cwd: PKG_ROOT });
 }
 
 function run() {
+  logPreflightAuth();
+  assertGhAuthOrExit();
   console.log('Buscando alertas Dependabot (critical/high)...');
 
   if (process.env.CURSOR_TOKEN && !fs.existsSync(RULES_MDC) && !fs.existsSync(RULES_MD)) {
@@ -423,7 +472,12 @@ function run() {
     try {
       syncDefaultBranch();
 
-      const whyOutput = exec(`pnpm why ${JSON.stringify(pkgName)} --json || true`);
+      let whyOutput = '';
+      try {
+        whyOutput = pnpmExec(['why', pkgName, '--json']);
+      } catch {
+        whyOutput = '';
+      }
       const ghost =
         whyOutput.includes('"dependencies":{}') ||
         whyOutput.trim() === '[]' ||
@@ -431,7 +485,7 @@ function run() {
 
       if (ghost) {
         console.log(`Ghost/no dependents: ${pkgName}, refrescando lockfile`);
-        exec('pnpm install --no-frozen-lockfile');
+        pnpmExec(['install', '--no-frozen-lockfile']);
         createPR(
           pkgName,
           safeVersion,
@@ -445,11 +499,11 @@ function run() {
         console.log('Pacote mencionado no workspace/catalog (revisar manualmente se necessário).');
       }
 
-      exec(`pnpm add -E ${JSON.stringify(`${pkgName}@${safeVersion}`)} --ignore-scripts`);
-      exec('pnpm install --no-frozen-lockfile');
+      pnpmExec(['add', '-E', `${pkgName}@${safeVersion}`, '--ignore-scripts']);
+      pnpmExec(['install', '--no-frozen-lockfile']);
       let auditNote = '';
       try {
-        exec('pnpm audit --audit-level high');
+        pnpmExec(['audit', '--audit-level', 'high']);
       } catch {
         auditNote =
           '**Aviso:** `pnpm audit --audit-level high` ainda reporta vulnerabilidades (possíveis transitivas ou outros alertas).';

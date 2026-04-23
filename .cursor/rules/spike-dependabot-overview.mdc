@@ -1,0 +1,14 @@
+---
+description: Contexto do repositório spike-dependabot e convenções globais
+alwaysApply: true
+---
+
+# Spike Dependabot — contexto
+
+Este repositório é um **spike de automação**: workflow no GitHub Actions (`cursor-security-fix.yml`) executa `javascript/scripts/cursor-fixer.js`, que usa **`gh`/REST** para ler **Dependabot alerts**, orquestra correções e usa regras em `.cursor/rules` ou `rules/` quando aplicável.
+
+- **Pacotes JS**: diretório `javascript/` com `pnpm`; lockfile referenciado no workflow.
+- **Versões**: ao mexer em `package.json`, use **versões exatas** (sem `^`, `~`, ranges). Instalação com `--save-exact` / equivalente no pnpm.
+- **Secrets esperados**: `CURSOR_TOKEN` onde o fluxo precisar; opcionalmente `GH_DEPENDABOT_ALERTS_TOKEN` (PAT) quando `GITHUB_TOKEN`/`github.token` não bastar para a API de alertas (org/política).
+
+Evite mudanças amplas não pedidas; mantenha alinhamento com workflows e scripts existentes.
