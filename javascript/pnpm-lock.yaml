@@ -35,12 +35,24 @@ importers:
       serialize-javascript:
         specifier: 3.1.0
         version: 3.1.0
+      shell-quote:
+        specifier: 1.6.1
+        version: 1.6.1
 
 packages:
 
   '@handsontable/formulajs@2.0.2':
     resolution: {integrity: sha512-maIyMJtYjA5e/R9nyA22Qd7Yw73MBSxClJvle0a8XWAS/5l6shc/OFpQqrmwMy4IXUCmywJ9ER0gOGz/YA720w==}
     hasBin: true
+
+  array-filter@0.0.1:
+    resolution: {integrity: sha512-VW0FpCIhjZdarWjIz8Vpva7U95fl2Jn+b+mmFFMLn8PIVscOQcAgEznwUzTEuUHuqZqIxwzRlcaN/urTFFQoiw==}
+
+  array-map@0.0.1:
+    resolution: {integrity: sha512-sxHIeJTGEsRC8/hYkZzdJNNPZ41EXHVys7pqMw1iwE/Kx8/hto0UbDuGQsSJ0ujPovj9qUZl6EOY/EiZ2g3d9Q==}
+
+  array-reduce@0.0.0:
+    resolution: {integrity: sha512-8jR+StqaC636u7h3ye1co3lQRefgVVUQUhuAmRbDqIMeR2yuXzRvkCNQiQ5J/wbREmoBLNtp13dhaaVpZQDRUw==}
 
   axios@0.21.1:
     resolution: {integrity: sha512-dKQiRHxGD9PPRIUNIWvZhPTPpl1rf/OxTYKsqKUDjBwYylTvV7SjSHJb9ratfyzM6wCdLCOYLzs73qpg5c4iGA==}
@@ -69,6 +81,9 @@ packages:
 
   json-schema@0.2.3:
     resolution: {integrity: sha512-a3xHnILGMtk+hDOqNwHzF6e2fNbiMrXZvxKQiEv2MlgQP+pjIOzqAmKYD2mDpXYE/44M7g+n9p2bKkYWDUcXCQ==}
+
+  jsonify@0.0.1:
+    resolution: {integrity: sha512-2/Ki0GcmuqSrgFyelQq9M05y7PS0mEwuIzrf3f1fPqkVDVRvZrPZtVSMHxdgo8Aq0sxAOb/cr2aqqA3LeWHVPg==}
 
   jsonwebtoken@8.5.1:
     resolution: {integrity: sha512-XjwVfRS6jTMsqYs0EsuJ4LGxXV14zQybNd4L2r0UvbVnSF9Af8x7p5MzbJ90Ioz/9TI41/hTCvznF/loiSzn8w==}
@@ -139,6 +154,9 @@ packages:
   serialize-javascript@3.1.0:
     resolution: {integrity: sha512-JIJT1DGiWmIKhzRsG91aS6Ze4sFUrYbltlkg2onR5OrnNM02Kl/hnY/T4FN2omvyeBbQmMJv+K4cPOpGzOTFBg==}
 
+  shell-quote@1.6.1:
+    resolution: {integrity: sha512-V0iQEZ/uoem3NmD91rD8XiuozJnq9/ZJnbHVXHnWqP1ucAhS3yJ7sLIIzEi57wFFcK3oi3kFUC46uSyWr35mxg==}
+
   tiny-emitter@2.1.0:
     resolution: {integrity: sha512-NB6Dk1A9xgQPMoGqC5CVXn123gWyte215ONT5Pp5a0yt4nlEoO1ZWeCwpncaekPHXO60i47ihFnZPiRPjRMq4Q==}
 
@@ -151,6 +169,12 @@ snapshots:
     dependencies:
       bessel: 1.0.2
       jstat: 1.9.6
+
+  array-filter@0.0.1: {}
+
+  array-map@0.0.1: {}
+
+  array-reduce@0.0.0: {}
 
   axios@0.21.1:
     dependencies:
@@ -174,6 +198,8 @@ snapshots:
       tiny-emitter: 2.1.0
 
   json-schema@0.2.3: {}
+
+  jsonify@0.0.1: {}
 
   jsonwebtoken@8.5.1:
     dependencies:
@@ -242,6 +268,13 @@ snapshots:
   serialize-javascript@3.1.0:
     dependencies:
       randombytes: 2.1.0
+
+  shell-quote@1.6.1:
+    dependencies:
+      array-filter: 0.0.1
+      array-map: 0.0.1
+      array-reduce: 0.0.0
+      jsonify: 0.0.1
 
   tiny-emitter@2.1.0: {}
 
