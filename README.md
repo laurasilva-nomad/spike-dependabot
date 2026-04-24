@@ -1,58 +1,68 @@
-# Automação de correção Dependabot (npm — todas as severidades)
+# Automação de Correção Dependabot (pnpm, npm, yarn)
 
-Automação em GitHub Actions que lista alertas **Dependabot** no ecosystem **npm** (severidades **Critical, High, Moderate, Low** com patch na API), aplica **um único PR** e documenta **estratégia** (bump direto, pin transitivo, override), **grafo** e **risco** (semver).
+Este repositório implementa um modelo **Automated-Proactive** de remediação de segurança. O objetivo é transformar o processo manual de correção de vulnerabilidades em um fluxo de [Self-Healing PRs](https://dev.to/akhil_mittal/self-healing-architecture-aws-24ao), eliminando o [Toil manual](https://sre.google/sre-book/eliminating-toil/) (fluxo manual repetitivo) e reduzindo o gargalo de escala de prs abertos por alertas do dependabot entre múltiplos repositórios.
+
+A premissa principsl é utilizar os alertas do dependabot para que o worflow analise e crie um PR com a melhor resolução possível com auxilio do Cursor, solicitando intervenção humana em casos necessários.
 
 ## O que é
 
-- Workflow [`.github/workflows/cursor-security-fix.yml`](.github/workflows/cursor-security-fix.yml) executando `scripts/cursor-fixer.js` na raiz de pacotes configurada (`SECURITY_PACKAGE_ROOT`, padrão `javascript/`).
-- Uso de **`gh`** com REST/GraphQL do GitHub para alertas abertos.
-- **Branch fixa** `security/dependabot-remediation` e **um PR** por execução (reexecução pode só atualizar o corpo do PR se já existir head igual).
+- **Workflow:** [`.github/workflows/cursor-security-fix.yml`](.github/workflows/cursor-security-fix.yml) que orquestra a detecção e remediação.
+- **Engine:** `scripts/cursor-fixer.js` para análise profunda de grafo e aplicação de patches inteligentes.
+- **Estratégia:** Consolida múltiplos alertas (Critical a Low) em **um único PR** na branch fixa `security/dependabot-remediation`, evitando a fadiga de notificações e reduzindo a concorrência de PRs.
 
-## O que resolve
+## O que resolve (Árvore de Decisão)
 
-- Reduz concorrência de PRs de segurança; consolida remediação.
-- **Árvore de decisão (resumo):** dependência **direta** → `add` com versão fixa; **indireta** com profundidade **> 2** (heurística `npm ls` + fallback) ou **major** da versão resolvida para a corrigida → `pnpm.overrides` / `overrides` (npm) / `resolutions` (yarn); **indireta** rasa e sem salto major → pin do pacote na raiz; se o add falhar → override como fallback.
-- Primeira linha do PR com **aviso de verificação manual** se algo falhar, o audit (`--audit-level low`) ainda acusar achados ou houver conflito de patches entre alertas do mesmo pacote.
+A automação segue princípios de **Shift-Left Security**, detectando o gerenciador local e aplicando a correção com base na estrutura do grafo de dependências:
+
+1.  **Dependência direta:** Executa `add` com versão fixa (ex: `pnpm add -E`, `npm install --save-exact` ou `yarn add --exact`).
+2.  **Indireta profunda (> 2 níveis) ou Major Leap:** Aplica automaticamente blocos de `overrides` (npm/pnpm) ou `resolutions` (yarn).
+3.  **Indireta rasa:** Realiza o pin do pacote na raiz via comando de instalação do gerenciador.
+4.  **Fallback:** Se o comando de `add` falhar, o script injeta o `override` no `package.json` como contingência de segurança.
+
+---
+
+## Configuração e Setup (Implementação)
+
+Para que o workflow consiga ler os alertas de segurança e abrir Pull Requests, é necessário configurar as permissões de acesso via Secrets.
+
+### 1. Gerar Personal Access Token (PAT)
+O `GITHUB_TOKEN` padrão pode ter limitações para ler alertas de segurança. Utilize um **Fine-grained PAT**:
+1.  Acesse [GitHub Settings > Personal Access Tokens](https://github.com/settings/personal-access-tokens).
+2.  Configure as seguintes permissões para os repositórios alvo:
+    - `Dependabot alerts`: **Read-only**.
+    - `Pull requests`: **Write**.
+    - `Contents`: **Write**.
+
+### 2. Configurar Secrets no Repositório
+No repositório do projeto, vá em **Settings > Secrets and variables > Actions** e adicione:
+
+| Secret | Descrição |
+| :--- | :--- |
+| `GH_DEPENDABOT_ALERTS_TOKEN` | O PAT gerado no passo anterior (obrigatório para leitura via API). |
+| `CURSOR_TOKEN` | Opcional (para integrações de IA com o Cursor). |
+
+---
 
 ## Como funciona
 
-1. **Permissões:** `security-events: read`, `contents: write`, `pull-requests: write`. PAT opcional `GH_DEPENDABOT_ALERTS_TOKEN` se o `github.token` não enxergar alertas.
-2. **Raiz de pacotes:** variável de repositório `SECURITY_PACKAGE_ROOT` ou input `package_root` no `workflow_dispatch`.
-3. **Gerenciador:** detectado por lockfile (pnpm / yarn / npm) no passo de install do workflow.
-4. **Script:** grupos por **nome de pacote**; **maior** semver entre patches retornados pela API, se **sem** conflito de major entre eles; filtra severidades abertas no conjunto `critical` / `high` / `moderate` / `low` (e `medium` vinda de mapeamentos GraphQL).
-5. **Validação pós-mudança:** `pnpm audit` / `npm audit` com `--audit-level low` no diretório de pacotes.
+1.  **Detecção de Raiz:** Utiliza a variável `SECURITY_PACKAGE_ROOT` (padrão `javascript/`) para localizar o `package.json`.
+2.  **Detecção de Gerenciador:** Identifica automaticamente se o projeto usa `pnpm`, `yarn` ou `npm` através dos arquivos de lockfile.
+3.  **Consolidação de Patches:** Agrupa alertas por pacote e seleciona a maior versão segura informada pela API do GitHub, validando conflitos de Major.
+4.  **Validação de Audit:** Após a mudança, o workflow executa `audit --audit-level low`. Se ainda houver achados, o PR é marcado com um aviso de **verificação manual obrigatória**.
 
-### Variáveis e secrets
+---
 
-| Nome | Uso |
-| --- | --- |
-| `GH_REPO_TOKEN` / `GH_TOKEN` | `gh` e API. |
-| `GH_DEPENDABOT_ALERTS_TOKEN` | PAT opcional. |
-| `SECURITY_PACKAGE_ROOT` | Caminho do `package.json` alvo. |
-| `DEFAULT_BRANCH` | Preenchido no workflow. |
-| `CURSOR_TOKEN` | Opcional. |
+## Integração com Cursor
 
-### Validação manual
+Para triagem manual ou casos onde a automação exige supervisão:
+- **Regras de Contexto:** [`.cursor/rules/security-automation.mdc`](.cursor/rules/security-automation.mdc).
+- **Guia Mestre:** [`docs/verify-issues-dependabot.md`](docs/verify-issues-dependabot.md).
+- **Uso:** Invoque `@docs/verify-issues-dependabot.md` no chat do Cursor para seguir o runbook de remediação manual alinhado à política da empresa.
 
-Node (`.nvmrc`), install alinhado ao lockfile, `audit --audit-level low`, testes/build do repositório.
+---
 
-### Reutilizar noutro repositório
-
-1. Copiar workflow e manter `scripts/cursor-fixer.js` em `<ROOT>/scripts/`.
-2. Dependência **`semver`** com versão exata no `package.json` da raiz onde o script roda.
-3. Ajustar `SECURITY_PACKAGE_ROOT` e permissões.
-
-### Cursor
-
-- [`.cursor/rules/security-automation.mdc`](.cursor/rules/security-automation.mdc)
-- Triagem manual: [`docs/verify-issues-dependabot.md`](docs/verify-issues-dependabot.md) — usar **`@docs/verify-issues-dependabot.md`** no chat.
-
-### Limitações
-
-- Só alerts **npm**. **Bump automático do “pai”** por registry não está implementado (apenas pin do vulnerável ou override); revisão humana para catalog/workspace e pins cirúrgicos `pai>filho`.
-- Profundidade / versão resolvida dependem de `npm ls --json`; emlayouts só pnpm o fallback pode ser menos preciso.
-- **Parent update** explícito (subir só o pacote pai quando ele ganha versão segura) segue recomendado no doc manual, não automatizado aqui.
+## Limitações
+- **Parent Update:** A automação prioriza a segurança imediata via `overrides`; a atualização de pacotes "pais" para resolver transitivas de forma nativa ainda é recomendada via fluxo manual.
 
 ## Licença
-
 Conforme o repositório pai.
