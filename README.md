@@ -1,4 +1,4 @@
-# Security Fixer Automation
+# 🛡️ Security Fixer Automation
 
 > **Remediação Proativa de Vulnerabilidades com Self-Healing PRs.**
 
@@ -6,61 +6,58 @@ Este repositório implementa um modelo **Automated-Proactive** de remediação d
 
 ---
 
-## Fluxo do Script
+## 🗺️ Fluxo do Script
 
 Para entender como a engine processa cada vulnerabilidade, consulte o diagrama abaixo:
 
-![Fluxo do Script Cursor-fixer](Captura%20de%20tela%20de%202026-04-29%2012-43-15.png)
+![Fluxo do Script Cursor-fixer](workflow-diagram.png)
 
 ---
 
-## O que este projeto resolve?
+## 🚀 O que este projeto resolve?
 
-- **Consolidação Inteligente:** Agrupa múltiplos alertas (Critical a Low) num **único PR** na branch fixa `security/dependabot-remediation`.
-- **Análise de Grafo:** Identifica se a vulnerabilidade é direta ou transitiva e escolhe a melhor estratégia de correção.
-- **Validação de Integridade:** Diferente do Dependabot padrão, este script roda seus scripts de `build` e `test` antes de sugerir a correção.
-- **Multi-Gerenciador:** Suporte nativo e automático para `npm`, `pnpm` e `yarn`.
+* **Consolidação Inteligente:** Agrupa múltiplos alertas (Critical a Low) num **único PR** na branch fixa `security/dependabot-remediation`.
+* **Análise de Grafo:** Identifica se a vulnerabilidade é direta ou transitiva e escolhe a melhor estratégia de correção.
+* **Validação de Integridade:** Diferente do Dependabot padrão, este script roda seus scripts de `build` e `test` antes de sugerir a correção.
+* **Multi-Gerenciador:** Suporte nativo e automático para `npm`, `pnpm` e `yarn`.
 
 ---
 
-## Estratégia de Remediação (Árvore de Decisão)
+## 🛠️ Estratégia de Remediação (Árvore de Decisão)
 
 A engine `cursor-fixer.js` analisa o grafo de dependências e aplica o princípio de **Shift-Left Security**:
 
-| Cenário                            | Ação Realizada             | Comando / Técnica                       |
-| :--------------------------------- | :------------------------- | :-------------------------------------- |
-| **Dependência Direta**             | Atualização de versão fixa | `add --save-exact`                      |
-| **Indireta Rasa (≤ 2 níveis)**     | Pin do pacote na raiz      | `add` (transitivo)                      |
-| **Indireta Profunda (> 2 níveis)** | Injeção de Resolução       | `overrides` ou `resolutions`            |
-| **Major Leap (Salto de Versão)**   | Override de Segurança      | Força versão patchada no `package.json` |
+| Cenário | Ação Realizada | Comando / Técnica |
+| :--- | :--- | :--- |
+| **Dependência Direta** | Atualização de versão fixa | `add --save-exact` |
+| **Indireta Rasa (≤ 2 níveis)** | Pin do pacote na raiz | `add` (transitivo) |
+| **Indireta Profunda (> 2 níveis)** | Injeção de Resolução | `overrides` ou `resolutions` |
+| **Major Leap (Salto de Versão)** | Override de Segurança | Força versão patchada no `package.json` |
 
 > [!IMPORTANT]
 > **Fallback de Segurança:** Se um comando de atualização falhar, o script injeta automaticamente o override como contingência para garantir a remediação.
 
 ---
 
-## Configuração e Setup
+## ⚙️ Configuração e Setup
 
 ### 1. Personal Access Token (PAT)
-
 O `GITHUB_TOKEN` padrão tem limitações. Configure um **Fine-grained PAT** com as seguintes permissões:
-
 - `Dependabot alerts`: **Read-only**
 - `Contents`: **Write**
 - `Pull requests`: **Write**
 
 ### 2. Secrets do Repositório
+No GitHub, vá em *Settings > Secrets and variables > Actions*:
 
-No GitHub, vá em _Settings > Secrets and variables > Actions_:
-
-| Secret                       | Descrição                                             |
-| :--------------------------- | :---------------------------------------------------- |
-| `GH_DEPENDABOT_ALERTS_TOKEN` | O PAT gerado no passo anterior (Obrigatório).         |
-| `SECURITY_PACKAGE_ROOT`      | Caminho do `package.json` (Ex: `javascript/` ou `.`). |
+| Secret | Descrição |
+| :--- | :--- |
+| `GH_DEPENDABOT_ALERTS_TOKEN` | O PAT gerado no passo anterior (Obrigatório). |
+| `SECURITY_PACKAGE_ROOT` | Caminho do `package.json` (Ex: `javascript/` ou `.`). |
 
 ---
 
-## Integração com Cursor AI
+## 🤖 Integração com Cursor AI
 
 Para triagem manual ou casos onde a automação exige supervisão humana (ex: conflitos de build):
 
@@ -69,7 +66,7 @@ Para triagem manual ou casos onde a automação exige supervisão humana (ex: co
 
 ---
 
-## Como funciona o Workflow
+## 📋 Como funciona o Workflow
 
 1. **Deteção:** Identifica o gerenciador (`pnpm`, `npm`, `yarn`) e mapeia o grafo de dependências em cache.
 2. **Consolidação:** Agrupa alertas por pacote e seleciona a maior versão segura da API.
@@ -79,6 +76,5 @@ Para triagem manual ou casos onde a automação exige supervisão humana (ex: co
 
 ---
 
-## Licença
-
+## 📄 Licença
 Conforme o repositório pai.
