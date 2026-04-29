@@ -34,7 +34,7 @@ jobs:
         with:
           node-version: 20
           # Opcional: Cache de dependências para velocidade
-          cache: 'npm'
+          cache: 'pnpm'
           cache-dependency-path: '${{ env.SECURITY_PACKAGE_ROOT }}/package-lock.json'
 
       - name: Configure Git
