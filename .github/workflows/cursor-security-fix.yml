@@ -2,11 +2,11 @@ name: Cursor Security Fixer
 
 on:
   schedule:
-    - cron: '0 8 * * 1-5' # Roda às 08:00 de segunda a sexta
+    - cron: '0 8 * * 1-5'
   workflow_dispatch:
     inputs:
       package_root:
-        description: 'Caminho relativo ao package.json (ex. javascript ou .)'
+        description: Caminho relativo ao package.json (ex. javascript ou .)
         required: false
         default: 'javascript'
 
@@ -16,10 +16,10 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      security-events: read
+      security-events: read # Necessário para ler os alertas
     
     env:
-      # Prioriza o PAT (Personal Access Token) para ler alertas, com fallback para o token do GitHub
+      # Prioriza o PAT para alertas, mas permite fallback para o token padrão do job
       GH_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN || github.token }}
       SECURITY_PACKAGE_ROOT: ${{ github.event.inputs.package_root || vars.SECURITY_PACKAGE_ROOT || 'javascript' }}
 
@@ -33,7 +33,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # Cache automático baseado no lockfile do subdiretório selecionado
+          # Opcional: Cache de dependências para velocidade
           cache: 'npm'
           cache-dependency-path: '${{ env.SECURITY_PACKAGE_ROOT }}/package-lock.json'
 
@@ -46,8 +46,6 @@ jobs:
         run: |
           set -euo pipefail
           cd "${SECURITY_PACKAGE_ROOT}"
-          
-          # Lógica de detecção do Gerenciador de Pacotes
           if [ -f pnpm-lock.yaml ] || [ -f "../../pnpm-workspace.yaml" ]; then
             corepack enable
             corepack prepare pnpm@9 --activate
@@ -62,8 +60,11 @@ jobs:
       - name: Execute Cursor Fix Logic
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          # Passando o token explicitamente para o script
           GH_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN || github.token }}
-          NODE_ENV: test
+          NODE_ENV: test  # Exemplo: define ambiente de teste
+          # Adicione aqui outras envs que seus testes exijam (API_KEY, DB_URL, etc)
         run: |
-          # Executa o script localizado dentro da pasta javascript/scripts/
+          # Ajuste o caminho abaixo conforme a localização real do seu script
           node "${SECURITY_PACKAGE_ROOT}/scripts/cursor-fixer.js"
+        
