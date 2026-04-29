@@ -16,11 +16,11 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      repository-projects: read
-      security-events: read
+      security-events: read # Necessário para ler os alertas
+    
     env:
-      GH_DEPENDABOT_ALERTS_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN }}
-      GH_REPO_TOKEN: ${{ github.token }}
+      # Prioriza o PAT para alertas, mas permite fallback para o token padrão do job
+      GH_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN || github.token }}
       SECURITY_PACKAGE_ROOT: ${{ github.event.inputs.package_root || vars.SECURITY_PACKAGE_ROOT || 'javascript' }}
 
     steps:
@@ -33,20 +33,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          # Opcional: Cache de dependências para velocidade
+          cache: 'npm'
+          cache-dependency-path: '${{ env.SECURITY_PACKAGE_ROOT }}/package-lock.json'
 
       - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Instalar dependências (detecta npm, pnpm ou yarn pelo lockfile)
-        env:
-          ROOT: ${{ env.SECURITY_PACKAGE_ROOT }}
+      - name: Instalar dependências (Pnpm/Yarn/Npm)
         run: |
           set -euo pipefail
-          test -f "${ROOT}/package.json"
-          cd "${ROOT}"
-          if [ -f pnpm-lock.yaml ] || [ -f "${GITHUB_WORKSPACE}/pnpm-lock.yaml" ] || [ -f "${GITHUB_WORKSPACE}/pnpm-workspace.yaml" ]; then
+          cd "${SECURITY_PACKAGE_ROOT}"
+          if [ -f pnpm-lock.yaml ] || [ -f "../../pnpm-workspace.yaml" ]; then
             corepack enable
             corepack prepare pnpm@9 --activate
             pnpm install --no-frozen-lockfile
@@ -57,41 +57,13 @@ jobs:
             npm install
           fi
 
-      - name: Dependabot REST (diagnóstico)
-        run: |
-          set -euo pipefail
-          export GH_TOKEN="${GH_DEPENDABOT_ALERTS_TOKEN:-${GH_REPO_TOKEN}}"
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::GH_TOKEN vazio (job precisa de GH_REPO_TOKEN ou PAT)."
-            exit 1
-          fi
-          if [ -n "${GH_DEPENDABOT_ALERTS_TOKEN:-}" ]; then echo "gh: PAT"; else echo "gh: GH_REPO_TOKEN"; fi
-          gh auth status
-          REPO="${{ github.repository }}"
-          REST_PATH="/repos/${REPO}/dependabot/alerts"
-          REST_LIST="${REST_PATH}?state=open&per_page=100"
-          echo "UI: https://github.com/${REPO}/security/dependabot"
-          echo "REST GET: ${REST_LIST}"
-          if ! gh api \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "${REST_LIST}" \
-            --jq 'length'; then
-            echo "::error::REST ${REST_PATH} falhou. Confira permissões e secret GH_DEPENDABOT_ALERTS_TOKEN se necessário."
-            exit 1
-          fi
-          gh api \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "${REST_LIST}" \
-            --jq '.[:15] | map({n:.number,sev:.security_advisory.severity,eco:.dependency.package.ecosystem,pkg:.dependency.package.name,pth:.dependency.manifest_path})'
-
       - name: Execute Cursor Fix Logic
         env:
-          CURSOR_TOKEN: ${{ secrets.CURSOR_TOKEN }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-          SECURITY_PACKAGE_ROOT: ${{ env.SECURITY_PACKAGE_ROOT }}
+          # Passando o token explicitamente para o script
+          GH_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN || github.token }}
+          NODE_ENV: test  # Exemplo: define ambiente de teste
+          # Adicione aqui outras envs que seus testes exijam (API_KEY, DB_URL, etc)
         run: |
-          node "${GITHUB_WORKSPACE}/${SECURITY_PACKAGE_ROOT}/scripts/cursor-fixer.js"
+          # Ajuste o caminho abaixo conforme a localização real do seu script
+          node "scripts/cursor-fixer.js"
