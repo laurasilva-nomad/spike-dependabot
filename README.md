@@ -53,7 +53,7 @@ No GitHub, vá em *Settings > Secrets and variables > Actions*:
 | Secret | Descrição |
 | :--- | :--- |
 | `GH_DEPENDABOT_ALERTS_TOKEN` | O PAT gerado no passo anterior (Obrigatório). |
-| `SECURITY_PACKAGE_ROOT` | Caminho do `package.json` (Ex: `javascript/` ou `.`). |
+| `SECURITY_PACKAGE_ROOT` | Caminho do `package.json` (normalmente `.` na raiz do repo). |
 
 ---
 

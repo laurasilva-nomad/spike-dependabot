@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       package_root:
-        description: Caminho relativo ao package.json (ex. javascript ou .)
+        description: Caminho relativo ao package.json (ex. . ou subpasta)
         required: false
-        default: 'javascript'
+        default: '.'
 
 jobs:
   fix:
@@ -21,7 +21,7 @@ jobs:
     env:
       # Prioriza o PAT para alertas, mas permite fallback para o token padrão do job
       GH_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN || github.token }}
-      SECURITY_PACKAGE_ROOT: ${{ github.event.inputs.package_root || vars.SECURITY_PACKAGE_ROOT || 'javascript' }}
+      SECURITY_PACKAGE_ROOT: ${{ github.event.inputs.package_root || vars.SECURITY_PACKAGE_ROOT || '.' }}
 
     steps:
       - name: Checkout
@@ -33,9 +33,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # Opcional: Cache de dependências para velocidade
           cache: 'pnpm'
-          cache-dependency-path: '${{ env.SECURITY_PACKAGE_ROOT }}/package-lock.json'
+          cache-dependency-path: '${{ env.SECURITY_PACKAGE_ROOT }}/pnpm-lock.yaml'
 
       - name: Configure Git
         run: |

@@ -10,7 +10,7 @@ updates:
     open-pull-requests-limit: 10
 
   - package-ecosystem: "npm"
-    directory: "/javascript"
+    directory: "/"
     schedule:
       interval: "daily"
       time: "07:30"
