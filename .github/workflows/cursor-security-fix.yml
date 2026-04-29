@@ -64,6 +64,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           # Passando o token explicitamente para o script
           GH_TOKEN: ${{ secrets.GH_DEPENDABOT_ALERTS_TOKEN || github.token }}
+          CURSOR_TOKEN: ${{ secrets.CURSOR_TOKEN }}
           NODE_ENV: test  # Exemplo: define ambiente de teste
           # Adicione aqui outras envs que seus testes exijam (API_KEY, DB_URL, etc)
         run: |

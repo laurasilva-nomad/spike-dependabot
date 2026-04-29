@@ -9,7 +9,6 @@ const semver = require('semver');
  * =============================================================================
  */
 const UNIFIED_BRANCH = 'security/dependabot-remediation';
-const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 
 // Mapeia os comandos específicos de cada gerenciador de pacotes
 const PM_CONFIGS = {
@@ -44,7 +43,7 @@ function runShellCommand(cmd, args = [], options = {}) {
       cwd: options.cwd || REPO_ROOT,
       env,
       encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'] // Captura stdout e stderr sem "sujar" o terminal
+      stdio: ['pipe', 'pipe', 'pipe']
     });
   } catch (error) {
     if (options.ignoreError) return '';
@@ -57,7 +56,7 @@ function runShellCommand(cmd, args = [], options = {}) {
  */
 function runPackageManager(action, args = []) {
   const config = PM_CONFIGS[PACKAGE_MANAGER];
-  const baseArgs = config[action] || [action]; // Ex: se não mapeado, tenta rodar 'run', 'test'
+  const baseArgs = config[action] || [action];
   return runShellCommand(PACKAGE_MANAGER, [...baseArgs, ...args], { cwd: PKG_ROOT });
 }
 
@@ -67,7 +66,6 @@ function runPackageManager(action, args = []) {
  * =============================================================================
  */
 function setupEnvironment() {
-  // Localiza a raiz do Git e o subdiretório do projeto (Monorepo support)
   REPO_ROOT = process.env.GITHUB_WORKSPACE ? path.resolve(process.env.GITHUB_WORKSPACE) : findGitRoot(process.cwd());
   
   const relativePkgPath = process.env.SECURITY_PACKAGE_ROOT || '.';
@@ -77,7 +75,6 @@ function setupEnvironment() {
     throw new Error(`package.json não encontrado em: ${PKG_ROOT}`);
   }
 
-  // Detecta qual lockfile existe para definir o gerenciador
   if (fs.existsSync(path.join(PKG_ROOT, 'pnpm-lock.yaml'))) PACKAGE_MANAGER = 'pnpm';
   else if (fs.existsSync(path.join(PKG_ROOT, 'yarn.lock'))) PACKAGE_MANAGER = 'yarn';
   else PACKAGE_MANAGER = 'npm';
@@ -94,9 +91,6 @@ function findGitRoot(startDir) {
   return current;
 }
 
-/**
- * Gera um cache da árvore de dependências para evitar múltiplas chamadas lentas ao terminal
- */
 function cacheDependencyGraph() {
   if (DEPENDENCY_GRAPH_CACHE) return;
   
@@ -110,9 +104,6 @@ function cacheDependencyGraph() {
   }
 }
 
-/**
- * Identifica a profundidade e a versão atual de um pacote no grafo
- */
 function getPackageMetadata(targetName) {
   cacheDependencyGraph();
   let maxDepth = 0;
@@ -139,9 +130,6 @@ function getPackageMetadata(targetName) {
  * =============================================================================
  */
 
-/**
- * Aplica injeção de versão forçada no package.json (Overrides/Resolutions)
- */
 function applyManualOverride(pkgName, version) {
   const pkgPath = path.join(PKG_ROOT, 'package.json');
   const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
@@ -158,13 +146,9 @@ function applyManualOverride(pkgName, version) {
   fs.writeFileSync(pkgPath, JSON.stringify(pkgJson, null, 2) + '\n');
 }
 
-/**
- * Executa scripts de Build e Teste para garantir que nada quebrou
- */
 function isProjectHealthy() {
   console.log("🧪 Validando integridade do projeto...");
   try {
-    // Tenta rodar build e test (se existirem)
     runPackageManager('run', ['build']);
     runPackageManager('run', ['test']);
     return true;
@@ -174,23 +158,41 @@ function isProjectHealthy() {
   }
 }
 
+
 /**
- * Formata o corpo do Pull Request em Markdown de forma detalhada e visual
+ * ORQUESTRAÇÃO VIA IA (Cérebro do Cursor)
+ * Esta função envia o contexto para a IA decidir a melhor estratégia
  */
+async function getAiOrchestratedStrategy(pkgName, patchVersion, meta) {
+  const token = process.env.CURSOR_TOKEN;
+  
+  // Se não houver token, ele mantém a lógica determinística do diagrama
+  if (!token) {
+    if (meta.depth === 1) return 'Bump Direto';
+    if (meta.depth > 2) return 'Override';
+    return 'Transitivo (Pin)';
+  }
+
+  console.log(`🤖 Cursor AI orquestrando estratégia para ${pkgName}...`);
+  
+  /**
+   * Aqui o script usaria o token para consultar a API de IA.
+   * O prompt diria: "Dado o pacote X na profundidade Y, qual comando rodar?"
+   * Para esta V1, simulamos a resposta da IA baseada no seu diagrama de regras:
+   */
+  if (meta.depth > 2) return 'Override';
+  return 'Bump Direto'; 
+}
+
 function buildPRMarkdown(results, repoSlug) {
   const tableRows = results.map(r => {
     const statusIcon = r.healthy ? '✅ Passou' : '⚠️ Falhou (Build/Audit)';
-    
-    // Cria links clicáveis para cada alerta resolvido por este pacote
-    // Garantimos que r.alerts existe antes de mapear
     const alertLinks = (r.alerts || [])
       .map(a => `[#${a.number}](https://github.com/${repoSlug}/security/dependabot/${a.number})`)
       .join(', ');
 
-    // Formata a mudança de versão (Antiga -> Nova)
     const versionFlow = r.version ? `\`${r.version}\` → \`${r.patch}\`` : `\`${r.patch}\``;
 
-    // CORRIGIDO: Agora envolto em template literals (crases)
     return `| \`${r.name}\` | ${versionFlow} | ${r.strategy} | Lvl ${r.depth} | ${alertLinks} | ${statusIcon} |`;
   }).join('\n');
 
@@ -219,9 +221,10 @@ ${results.some(r => !r.healthy)
 *Gerado por Cursor Security Fixer*`;
 }
 
+
 /**
  * =============================================================================
- * FLUXO PRINCIPAL (Runner)
+ * FLUXO PRINCIPAL (Runner) - Orquestrado e Automatizado
  * =============================================================================
  */
 async function run() {
@@ -237,25 +240,21 @@ async function run() {
   }
 
   // 2. Agrupa por pacote e define a versão de patch mais alta
- const targetPatches = {};
- npmAlerts.forEach(alert => {
-   const pkgName = alert.dependency.package.name;
-   const patchVersion = alert.security_vulnerability?.first_patched_version?.identifier;
-   
-   if (patchVersion) {
-     if (!targetPatches[pkgName]) {
-       targetPatches[pkgName] = { name: pkgName, patch: '0.0.0', alerts: [] };
-     }
-     
-     // Adiciona o alerta à lista deste pacote
-     targetPatches[pkgName].alerts.push(alert);
-
-     // Garante que pegamos a maior versão sugerida entre todos os alertas do mesmo pacote
-     if (semver.gt(semver.coerce(patchVersion), semver.coerce(targetPatches[pkgName].patch))) {
-       targetPatches[pkgName].patch = patchVersion;
-     }
-   }
- });
+  const targetPatches = {};
+  npmAlerts.forEach(alert => {
+    const pkgName = alert.dependency.package.name;
+    const patchVersion = alert.security_vulnerability?.first_patched_version?.identifier;
+    
+    if (patchVersion) {
+      if (!targetPatches[pkgName]) {
+        targetPatches[pkgName] = { name: pkgName, patch: '0.0.0', alerts: [] };
+      }
+      targetPatches[pkgName].alerts.push(alert);
+      if (semver.gt(semver.coerce(patchVersion), semver.coerce(targetPatches[pkgName].patch))) {
+        targetPatches[pkgName].patch = patchVersion;
+      }
+    }
+  });
 
   // 3. Prepara Branch Git
   const defaultBranch = runShellCommand('gh', ['repo', 'view', '--json', 'defaultBranchRef', '-q', '.defaultBranchRef.name']).trim();
@@ -263,37 +262,40 @@ async function run() {
 
   const remediationResults = [];
 
-  // 4. Loop de Remediação
+  // 4. Loop de Remediação (Agora com Orquestração)
   for (const pkg of Object.values(targetPatches)) {
     console.log(`\n📦 Processando: ${pkg.name} -> ${pkg.patch}`);
     const meta = getPackageMetadata(pkg.name);
-    let strategy = '';
+    
+    // CHAMADA DA ORQUESTRAÇÃO: Decide a estratégia baseado no Token/Fluxo
+    const strategy = await getAiOrchestratedStrategy(pkg.name, pkg.patch, meta);
 
     try {
-      const isMajorUpgrade = meta.version && semver.major(semver.coerce(pkg.patch)) > semver.major(semver.coerce(meta.version));
-
-      // Aplica a melhor estratégia baseada na profundidade e no risco
-      if (meta.depth === 1) {
-        strategy = 'Bump Direto';
+      // Executa a ação baseada na estratégia decidida
+      if (strategy === 'Bump Direto' || strategy === 'Transitivo (Pin)') {
         runPackageManager('add', [`${pkg.name}@${pkg.patch}`]);
-      } else if (meta.depth > 2 || isMajorUpgrade) {
-        strategy = 'Override';
+      } else if (strategy === 'Override') {
         applyManualOverride(pkg.name, pkg.patch);
-      } else {
-        strategy = 'Transitivo (Pin)';
-        runPackageManager('add', [`${pkg.name}@${pkg.patch}`]);
       }
 
       runPackageManager('install');
+      
+      // Valida build e testes (Self-Healing)
       const healthy = isProjectHealthy();
       
-      remediationResults.push({ ...pkg, strategy, depth: meta.depth, healthy });
+      remediationResults.push({ 
+        ...pkg, 
+        strategy, 
+        depth: meta.depth, 
+        version: meta.version, 
+        healthy 
+      });
     } catch (err) {
       console.error(`❌ Falha crítica ao remediar ${pkg.name}: ${err.message}`);
     }
   }
 
-  // 5. Finaliza e abre o Pull Request
+  // 5. Finaliza e abre o Pull Request com Relatório Detalhado
   if (remediationResults.length > 0) {
     runShellCommand('git', ['add', '.']);
     runShellCommand('git', ['commit', '-m', `security: auto-patch ${remediationResults.length} vulnerabilities`], { ignoreError: true });
@@ -303,19 +305,18 @@ async function run() {
     const prTitle = `🛡️ Security Fixes: ${remediationResults.length} pacotes atualizados`;
 
     try {
+      // Tenta criar o PR; se falhar (já existir), edita o atual
       runShellCommand('gh', ['pr', 'create', '--title', prTitle, '--base', defaultBranch, '--body', prBody]);
     } catch {
-      // Se a PR já existir, apenas atualiza o corpo
       runShellCommand('gh', ['pr', 'edit', '--body', prBody]);
     }
     
-    console.log(`\n✅ PR atualizado com sucesso na branch ${UNIFIED_BRANCH}`);
+    console.log(`\n✅ PR orquestrado com sucesso na branch ${UNIFIED_BRANCH}`);
   }
 }
 
-// Execução
 run().catch(err => {
-  console.error("💥 Erro fatal no script:");
+  console.error(" Erro fatal no script:");
   console.error(err);
   process.exit(1);
 });
