@@ -175,27 +175,48 @@ function isProjectHealthy() {
 }
 
 /**
- * Formata o corpo do Pull Request em Markdown
+ * Formata o corpo do Pull Request em Markdown de forma detalhada e visual
  */
-function buildPRMarkdown(results) {
-  const rows = results.map(r => 
-    `| \`${r.name}\` | \`${r.patch}\` | ${r.strategy} | Lvl ${r.depth} | ${r.healthy ? '✅' : '⚠️'} |`
-  ).join('\n');
+function buildPRMarkdown(results, repoSlug) {
+  const tableRows = results.map(r => {
+    const statusIcon = r.healthy ? '✅ Passou' : '⚠️ Falhou (Build/Audit)';
+    
+    // Cria links clicáveis para cada alerta resolvido por este pacote
+    // Garantimos que r.alerts existe antes de mapear
+    const alertLinks = (r.alerts || [])
+      .map(a => `[#${a.number}](https://github.com/${repoSlug}/security/dependabot/${a.number})`)
+      .join(', ');
+
+    // Formata a mudança de versão (Antiga -> Nova)
+    const versionFlow = r.version ? `\`${r.version}\` → \`${r.patch}\`` : `\`${r.patch}\``;
+
+    // CORRIGIDO: Agora envolto em template literals (crases)
+    return `| \`${r.name}\` | ${versionFlow} | ${r.strategy} | Lvl ${r.depth} | ${alertLinks} | ${statusIcon} |`;
+  }).join('\n');
 
   return `## 🛡️ Relatório de Segurança (Consolidado)
 
-Agrupamento automático de alertas Dependabot para evitar múltiplos PRs abertos.
+Agrupamento automático de alertas Dependabot seguindo o fluxo **Self-Healing**.
 
-| Pacote | Versão Fix | Estratégia | Profundidade | Status |
-| :--- | :--- | :--- | :--- | :--- |
-${rows}
+### 📊 Resumo da Remediação
+| Pacote | Mudança de Versão | Estratégia (Fluxo) | Nível | Alertas | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+${tableRows}
 
 ---
+
+### 🧠 Lógica de Decisão (Conforme Diagrama)
+- **Bump Direto / Transitivo:** Aplicado em pacotes de níveis rasos (Lvl 1-2) para manter a integridade nativa do lockfile.
+- **Override / Resolution:** Aplicado em dependências profundas ou saltos de versão "Major" para forçar a segurança onde o comando \`add\` falha.
+- **Validação:** O status reflete o sucesso do comando \`audit\` e dos scripts de \`build\` e \`test\`.
+
 ${results.some(r => !r.healthy) 
-  ? '> [!CAUTION]\n> **Atenção:** Algumas atualizações falharam no Build ou Teste. Revise manualmente.' 
-  : '> [!TIP]\n> Todos os pacotes passaram nos checks de Build e Teste.'
+  ? '> [!CAUTION]\n> **Ação Necessária:** Algumas atualizações apresentaram instabilidade no build ou audit. Revise os logs antes do merge.' 
+  : '> [!TIP]\n> **Sucesso:** Todos os pacotes foram atualizados e o projeto permanece estável.'
 }
-\n*Gerado por Cursor Security Fixer*`;
+
+---
+*Gerado por Cursor Security Fixer*`;
 }
 
 /**
@@ -216,18 +237,25 @@ async function run() {
   }
 
   // 2. Agrupa por pacote e define a versão de patch mais alta
-  const targetPatches = {};
-  npmAlerts.forEach(alert => {
-    const pkgName = alert.dependency.package.name;
-    const patchVersion = alert.security_vulnerability?.first_patched_version?.identifier;
-    
-    if (patchVersion) {
-      targetPatches[pkgName] = targetPatches[pkgName] || { name: pkgName, patch: '0.0.0' };
-      if (semver.gt(semver.coerce(patchVersion), semver.coerce(targetPatches[pkgName].patch))) {
-        targetPatches[pkgName].patch = patchVersion;
-      }
-    }
-  });
+ const targetPatches = {};
+ npmAlerts.forEach(alert => {
+   const pkgName = alert.dependency.package.name;
+   const patchVersion = alert.security_vulnerability?.first_patched_version?.identifier;
+   
+   if (patchVersion) {
+     if (!targetPatches[pkgName]) {
+       targetPatches[pkgName] = { name: pkgName, patch: '0.0.0', alerts: [] };
+     }
+     
+     // Adiciona o alerta à lista deste pacote
+     targetPatches[pkgName].alerts.push(alert);
+
+     // Garante que pegamos a maior versão sugerida entre todos os alertas do mesmo pacote
+     if (semver.gt(semver.coerce(patchVersion), semver.coerce(targetPatches[pkgName].patch))) {
+       targetPatches[pkgName].patch = patchVersion;
+     }
+   }
+ });
 
   // 3. Prepara Branch Git
   const defaultBranch = runShellCommand('gh', ['repo', 'view', '--json', 'defaultBranchRef', '-q', '.defaultBranchRef.name']).trim();
@@ -271,7 +299,7 @@ async function run() {
     runShellCommand('git', ['commit', '-m', `security: auto-patch ${remediationResults.length} vulnerabilities`], { ignoreError: true });
     runShellCommand('git', ['push', '-u', 'origin', 'HEAD', '--force']);
     
-    const prBody = buildPRMarkdown(remediationResults);
+    const prBody = buildPRMarkdown(remediationResults, repoSlug);
     const prTitle = `🛡️ Security Fixes: ${remediationResults.length} pacotes atualizados`;
 
     try {
